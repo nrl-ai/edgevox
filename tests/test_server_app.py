@@ -91,6 +91,7 @@ class FakeCore:
             "language": self.language,
             "languages": ["en"],
             "voice": self.voice,
+            "voices": ["fake-voice"],
             "stt": "FakeSTT",
             "tts": "FakeTTS",
             "tts_sample_rate": self.tts.sample_rate,
