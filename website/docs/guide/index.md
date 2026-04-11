@@ -17,7 +17,7 @@ Each component runs locally on your machine. The streaming architecture means th
 - **Portability first** — runs on an i9+RTX3080 desktop or an M1 MacBook Air
 - **Language-aware** — automatically selects the best STT/TTS models per language
 - **Interruptible** — speak over the bot at any time to cut it off
-- **Developer-friendly** — TUI with slash commands for testing voices, models, and languages
+- **Developer-friendly** — TUI with slash commands, Web UI, and simple CLI modes
 
 ## Pipeline Components
 
@@ -28,17 +28,20 @@ Each component runs locally on your machine. The streaming architecture means th
 | **LLM** | Gemma 4 E2B IT Q4_K_M | Chat via llama-cpp-python |
 | **TTS** | Kokoro-82M | Text-to-speech (24kHz, 9 native languages) |
 
-## Special Language Support
+## Multi-Language TTS/STT Backends
 
-Vietnamese gets dedicated models for best accuracy:
+| Language | STT | TTS Backend |
+|----------|-----|-------------|
+| English, French, Spanish, etc. | Faster-Whisper | Kokoro-82M |
+| Vietnamese | Sherpa-ONNX (Zipformer 30M) | Piper ONNX |
+| German, Russian, Arabic, Indonesian | Faster-Whisper | Piper ONNX |
+| Korean | Faster-Whisper | Supertonic |
+| Thai | Faster-Whisper | PyThaiTTS |
 
-| Component | Vietnamese Model | Why |
-|-----------|-----------------|-----|
-| STT | ChunkFormer-CTC-Large-Vie | 4.18% WER, 14x smaller than Whisper |
-| TTS | Piper ONNX | Lightweight, good Vietnamese quality |
+Models are hosted on `nrl-ai/edgevox-models` (HuggingFace) with automatic fallback to upstream repos.
 
 ## Next Steps
 
 - [Quick Start](/guide/quickstart) — install and run in 5 minutes
 - [Architecture](/guide/architecture) — deep dive into the streaming pipeline
-- [Languages](/guide/languages) — all 15 supported languages
+- [Languages](/guide/languages) — all supported languages and backends

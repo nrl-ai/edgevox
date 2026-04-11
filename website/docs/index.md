@@ -11,7 +11,7 @@ hero:
       link: /guide/
     - theme: alt
       text: View on GitHub
-      link: https://github.com/user/edgevox
+      link: https://github.com/vietanhdev/edgevox
 
 features:
   - title: Sub-second Latency
@@ -19,16 +19,16 @@ features:
     details: Streaming pipeline with sentence-level TTS delivers first audio in under 0.8 seconds.
   - title: 15 Languages
     icon: 🌍
-    details: English, Vietnamese, French, Spanish, Japanese, Chinese, Korean, and more with language-specific STT/TTS.
+    details: English, Vietnamese, French, Korean, Thai, German, Russian, and more with language-specific STT/TTS backends.
   - title: 100% Local
     icon: 🔒
-    details: No cloud APIs. Whisper STT + Gemma 4 LLM + Kokoro TTS all run on your hardware.
+    details: No cloud APIs. Whisper/Sherpa STT + Gemma LLM + Kokoro/Piper/Supertonic TTS all run on your hardware.
   - title: Voice Interrupt
     icon: 🎤
     details: Speak over the bot mid-response to cut it off for natural conversational flow.
-  - title: TUI Dashboard
+  - title: TUI + Web UI
     icon: 📟
-    details: Rich terminal UI with waveform, latency sparklines, GPU monitor, and slash commands.
+    details: Rich terminal UI with slash commands, plus a Web UI served via FastAPI + WebSocket.
   - title: ROS2 Ready
     icon: 🤖
     details: Optional ROS2 bridge for robotics. Publish transcriptions, subscribe to TTS commands.

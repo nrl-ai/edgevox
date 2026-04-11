@@ -2,9 +2,9 @@
 
 EdgeVox supports 15 languages with automatic STT/TTS backend selection.
 
-## Fully Supported Languages
+## Kokoro Languages (Near-Commercial Quality)
 
-These languages have native TTS support via Kokoro-82M (near-commercial quality):
+These languages have native TTS support via Kokoro-82M:
 
 | Language | Code | STT | TTS | Default Voice |
 |----------|------|-----|-----|---------------|
@@ -24,27 +24,38 @@ Vietnamese uses dedicated models for best accuracy:
 
 | Component | Model | Details |
 |-----------|-------|---------|
-| STT | ChunkFormer-CTC-Large-Vie | 110M params, 4.18% WER on VIVOS |
-| TTS | Piper ONNX | `vi-female` (vais1000-medium) or `vi-male` |
+| STT | Sherpa-ONNX Zipformer (30M, int8) | RTF ~0.01 on CPU, Apache 2.0 |
+| TTS | Piper ONNX | 3 voices: `vi-vais1000`, `vi-25hours`, `vi-vivos` |
 
-ChunkFormer is 14x smaller than PhoWhisper-large with better accuracy. Falls back to Whisper if unavailable.
+Falls back to Whisper STT if Sherpa-ONNX is unavailable.
 
-## STT-Only Languages
+## Piper Languages (Lightweight ONNX)
 
-These languages work with Whisper STT but fall back to English Kokoro for TTS:
+These languages use Piper VITS models — lightweight and real-time on CPU:
 
-| Language | Code | Notes |
-|----------|------|-------|
-| Korean | `ko` | TTS responds in English |
-| German | `de` | TTS responds in English |
-| Thai | `th` | TTS responds in English |
-| Russian | `ru` | TTS responds in English |
-| Arabic | `ar` | TTS responds in English |
-| Indonesian | `id` | TTS responds in English |
+| Language | Code | STT | Voices |
+|----------|------|-----|--------|
+| German | `de` | Whisper | 10 voices (`de-thorsten`, `de-kerstin`, `de-ramona`, ...) |
+| Russian | `ru` | Whisper | 4 voices (`ru-irina`, `ru-dmitri`, `ru-denis`, `ru-ruslan`) |
+| Arabic | `ar` | Whisper | 2 voices (`ar-kareem`, `ar-kareem-low`) |
+| Indonesian | `id` | Whisper | 1 voice (`id-news`) |
 
-::: tip Adding native TTS
-As Kokoro adds more languages, these will automatically get native TTS. Update the language config in `edgevox/languages.py`.
-:::
+## Korean (Supertonic)
+
+Korean uses the Supertonic-2 ONNX model — real-time on CPU with 10 voice styles:
+
+| Voice | Description |
+|-------|-------------|
+| `ko-F1` .. `ko-F5` | 5 female voices (calm, bright, clear, crisp, kind) |
+| `ko-M1` .. `ko-M5` | 5 male voices (lively, deep, polished, soft, warm) |
+
+## Thai (PyThaiTTS)
+
+Thai uses PyThaiTTS with a Tacotron2 ONNX model (Apache 2.0):
+
+| Voice | Model | Sample Rate |
+|-------|-------|-------------|
+| `th-default` | lunarlist_onnx | 22,050 Hz |
 
 ## Switching Languages
 
@@ -53,21 +64,29 @@ As Kokoro adds more languages, these will automatically get native TTS. Update t
 ```
 /lang fr          # Switch to French
 /lang vi          # Switch to Vietnamese
+/lang ko          # Switch to Korean (Supertonic TTS)
 /langs            # List all languages with backends
+/voices           # List voices for current language
 ```
 
-Or use the Language dropdown in the side panel.
+Or use the Language and Voice dropdowns in the side panel.
+
+### Via Web UI
+
+Use the language and voice selectors in the web interface, or type `/lang ko` in the text input.
 
 ### Via CLI
 
 ```bash
-python -m edgevox tui --language fr
+edgevox --language fr
+edgevox --language ko --voice ko-M2
+edgevox --web-ui --language de --voice de-thorsten
 ```
 
 ### Via Code
 
 ```python
-from edgevox.languages import get_lang, LANGUAGES
+from edgevox.core.config import get_lang, LANGUAGES
 
 cfg = get_lang("ja")
 print(cfg.name)          # "Japanese"
@@ -75,11 +94,15 @@ print(cfg.stt_backend)   # "whisper"
 print(cfg.tts_backend)   # "kokoro"
 print(cfg.kokoro_lang)   # "j"
 print(cfg.default_voice) # "jf_alpha"
+
+cfg = get_lang("ko")
+print(cfg.tts_backend)   # "supertonic"
+print(cfg.default_voice) # "ko-F1"
 ```
 
 ## Adding a New Language
 
-Add one entry to `edgevox/languages.py`:
+Add one entry to `edgevox/core/config.py`:
 
 ```python
 _reg(LanguageConfig(
@@ -92,6 +115,7 @@ _reg(LanguageConfig(
 ```
 
 The language will automatically appear in:
-- TUI language dropdown
+- TUI language and voice dropdowns
+- Web UI selectors
 - `/langs` command output
 - CLI `--language` option

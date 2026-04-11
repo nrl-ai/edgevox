@@ -41,11 +41,18 @@ Auto-selects model size based on hardware:
 | CPU (16GB+ RAM) | `medium` | CPU | int8 |
 | CPU (< 16GB) | `small` | CPU | int8 |
 
-### ChunkFormer (Vietnamese)
+### Sherpa-ONNX (Vietnamese)
+
+- Model: Zipformer transducer, 30M params (int8)
+- RTF ~0.01 on CPU — extremely fast
+- Uses encoder + decoder + joiner architecture
+- Apache 2.0 licensed
+- Falls back to Whisper on load failure
+
+### ChunkFormer (Vietnamese, legacy)
 
 - Model: `khanhld/chunkformer-ctc-large-vie`
 - 110M parameters, 4.18% WER on VIVOS
-- Requires audio written to temp file (API limitation)
 - Falls back to Whisper on load failure
 
 ## TTS Backends
@@ -54,15 +61,29 @@ Auto-selects model size based on hardware:
 
 - 82M parameter model, 9 native languages
 - 24kHz output sample rate
-- Multiple voices per language (see `/voices`)
+- 25 voices across languages (see `/voices`)
 - Streaming support via `synthesize_stream()`
+- Language switching without model reload
 
-### Piper (Vietnamese)
+### Piper ONNX
 
-- ONNX-based, lightweight
+- Lightweight VITS architecture, real-time on CPU
 - 22,050 Hz output sample rate
-- Two voices: `vi-female` (vais1000-medium), `vi-male` (25hours_single-low)
-- Auto-downloaded from HuggingFace
+- 20 voices across Vietnamese, German, Russian, Arabic, Indonesian
+- Models hosted on `nrl-ai/edgevox-models` with upstream fallbacks
+
+### Supertonic (Korean)
+
+- ONNX model, real-time on CPU
+- 44,100 Hz output sample rate
+- 10 voice styles (5 female, 5 male)
+- MIT code + OpenRAIL-M weights
+
+### PyThaiTTS (Thai)
+
+- Tacotron2 ONNX architecture
+- 22,050 Hz output sample rate
+- Apache 2.0 licensed
 
 ## Interrupt Mechanism
 
@@ -75,6 +96,14 @@ User speaks → VAD detects → _on_interrupt() called
 ```
 
 The interrupt is non-blocking — the pipeline naturally exits at the next checkpoint (sentence boundary or audio chunk).
+
+## Echo Suppression
+
+During TTS playback, the microphone is suppressed to prevent the bot's audio from being captured as speech:
+
+- **Pause**: Mic enters echo suppression when TTS starts playing
+- **Generation counter**: Stale cooldown timers are ignored if a newer pause has been issued
+- **Force resume**: When the pipeline finishes, the mic is re-enabled after a brief delay (0.3s) instead of waiting through the full cooldown
 
 ## LLM Configuration
 

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from edgevox.core.config import LANGUAGES, get_lang
 from edgevox.llm import LLM
 from edgevox.stt import create_stt
-from edgevox.tts import PIPER_VOICES, create_tts
+from edgevox.tts import create_tts, get_piper_voices
 
 if TYPE_CHECKING:
     from edgevox.server.session import SessionState
@@ -109,8 +109,9 @@ class ServerCore:
             return list(SUPERTONIC_VOICES.keys())
         else:
             prefix = cfg.code + "-"
-            matching = [v for v in PIPER_VOICES if v.startswith(prefix)]
-            others = [v for v in PIPER_VOICES if not v.startswith(prefix)]
+            piper_voices = get_piper_voices()
+            matching = [v for v in piper_voices if v.startswith(prefix)]
+            others = [v for v in piper_voices if not v.startswith(prefix)]
             return matching + others
 
     def info(self) -> dict:

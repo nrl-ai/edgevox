@@ -23,7 +23,7 @@ Type `/` in the command bar (or press `/` key) to enter commands.
 | `/say TEXT` | Synthesize and play text directly (skip LLM) |
 | `/mictest` | Record 3 seconds from mic, then play back |
 | `/model SIZE` | Hot-swap Whisper STT model |
-| `/voice NAME` | Change TTS voice |
+| `/voice NAME` | Change TTS voice (reloads TTS backend if needed) |
 | `/voices` | List available TTS voices for current language |
 
 ### Language
@@ -51,8 +51,26 @@ Type `/` in the command bar (or press `/` key) to enter commands.
 /say The quick brown fox jumps over the lazy dog.
 /lang fr
 /say Bonjour, comment allez-vous aujourd'hui?
-/lang ja
-/say Konnichiwa, genki desu ka?
+/lang ko
+/say 안녕하세요, 오늘 날씨가 좋습니다.
+```
+
+### Comparing voices across backends
+
+```
+/lang de
+/voices                    # See 10 German Piper voices
+/voice de-thorsten-high    # High-quality Thorsten
+/say Hallo, wie geht es Ihnen?
+/voice de-kerstin          # Switch to Kerstin
+/say Hallo, wie geht es Ihnen?
+
+/lang ko
+/voices                    # See 10 Supertonic voices
+/voice ko-F2               # Bright female
+/say 안녕하세요!
+/voice ko-M2               # Deep male
+/say 안녕하세요!
 ```
 
 ### Comparing Whisper models
@@ -70,14 +88,4 @@ Type `/` in the command bar (or press `/` key) to enter commands.
 /mictest
 # Records 3 seconds, shows peak/RMS levels, plays back
 # Useful for verifying the right mic/speaker is selected
-```
-
-### Switching voices
-
-```
-/voices                    # See available voices
-/voice am_adam             # Switch to male voice
-/say Hello from Adam!
-/voice af_bella            # Switch to different female voice
-/say Hello from Bella!
 ```
