@@ -3,67 +3,83 @@
 ## Usage
 
 ```bash
-python -m edgevox <command> [options]
+edgevox [mode] [options]
 ```
 
-## Commands
+## Modes
 
-### `tui`
+EdgeVox supports three UI modes (mutually exclusive):
 
-Launch the interactive terminal UI.
+| Flag | Mode | Description |
+|------|------|-------------|
+| _(default)_ | TUI | Interactive terminal UI with waveform, slash commands |
+| `--web-ui` | Web UI | FastAPI server with browser-based interface |
+| `--simple-ui` | Simple CLI | Minimal terminal interface |
 
-```bash
-python -m edgevox tui [options]
-```
+## Shared Options
 
-**Options:**
+These options work across all modes:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--language` | `en` | Language code (en, vi, fr, es, ...) |
+| `--language` | `en` | Language code (en, vi, fr, ko, de, th, ...) |
 | `--voice` | auto | TTS voice name |
-| `--whisper-model` | auto | Whisper model size (tiny, base, small, medium, large-v3-turbo) |
-| `--whisper-device` | auto | Device for Whisper (cuda, cpu) |
-| `--model-path` | auto | Path to LLM GGUF file |
-| `--mic-device` | system default | Microphone device index |
-| `--spk-device` | system default | Speaker device index |
+| `--stt` | auto | STT model size (tiny, base, small, medium, large-v3-turbo, sherpa) |
+| `--stt-device` | auto | Device for STT (cuda, cpu) |
+| `--llm` | auto | Path to LLM GGUF file or HuggingFace model spec |
+| `--tts` | auto | Force TTS backend (kokoro, piper, supertonic, pythaitts) |
+| `-v, --verbose` | off | Enable debug logging |
+
+## TUI Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mic` | system default | Microphone device index |
+| `--spk` | system default | Speaker device index |
 | `--wakeword` | none | Wake word phrase (e.g., "hey jarvis") |
 | `--session-timeout` | `30` | Seconds of silence before session ends (with wake word) |
 | `--ros2` | `false` | Enable ROS2 bridge |
 
-### `text`
-
-Text-only chat mode (no audio).
-
-```bash
-python -m edgevox text [options]
-```
-
-**Options:**
+## Web UI Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model-path` | auto | Path to LLM GGUF file |
-| `--language` | `en` | Language for TTS output |
+| `--host` | `127.0.0.1` | Bind host |
+| `--port` | `8765` | Bind port |
+
+## Simple CLI Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--text-mode` | `false` | Text-only mode, no microphone |
 
 ## Examples
 
 ```bash
-# Basic English usage
-python -m edgevox tui
+# Default TUI
+edgevox
 
-# Vietnamese with female voice
-python -m edgevox tui --language vi --voice vi-female
+# Web UI on all interfaces
+edgevox --web-ui --host 0.0.0.0 --port 9000
 
-# French with specific Whisper model
-python -m edgevox tui --language fr --whisper-model large-v3-turbo
+# Vietnamese with Sherpa STT
+edgevox --language vi
+
+# Korean with Supertonic TTS
+edgevox --language ko --voice ko-M2
+
+# German with specific Piper voice
+edgevox --language de --voice de-thorsten-high
+
+# Text-only mode for testing LLM
+edgevox --simple-ui --text-mode
 
 # Wake word mode with 60s timeout
-python -m edgevox tui --wakeword "hey pilot" --session-timeout 60
+edgevox --wakeword "hey pilot" --session-timeout 60
 
 # Specific audio devices
-python -m edgevox tui --mic-device 2 --spk-device 4
+edgevox --mic 2 --spk 4
 
-# Text mode for testing LLM
-python -m edgevox text
+# Custom LLM model from HuggingFace
+edgevox --llm hf:bartowski/Phi-4-mini-instruct-GGUF:Phi-4-mini-instruct-Q4_K_M.gguf
 ```

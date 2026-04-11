@@ -79,36 +79,43 @@ While the bot is speaking:
 ```mermaid
 flowchart LR
     LANG[Language Code]
-    CFG[languages.py]
+    CFG[config.py]
 
     subgraph STT
         WHISPER[Whisper]
-        CHUNK[ChunkFormer]
+        SHERPA[Sherpa-ONNX]
     end
 
     subgraph TTS
         KOKORO[Kokoro-82M]
         PIPER[Piper ONNX]
+        SUPER[Supertonic]
+        THAI[PyThaiTTS]
     end
 
     LANG --> CFG
     CFG -->|whisper| WHISPER
-    CFG -->|chunkformer| CHUNK
+    CFG -->|sherpa| SHERPA
     CFG -->|kokoro| KOKORO
     CFG -->|piper| PIPER
+    CFG -->|supertonic| SUPER
+    CFG -->|pythaitts| THAI
 ```
 
-The `create_stt()` and `create_tts()` factories consult `languages.py` to pick the best model:
+The `create_stt()` and `create_tts()` factories consult `config.py` to pick the best model:
 
 ```python
 # Automatic per-language selection
 cfg = get_lang("vi")
-# cfg.stt_backend == "chunkformer"  -> ChunkFormerSTT
-# cfg.tts_backend == "piper"        -> PiperTTS
+# cfg.stt_backend == "sherpa"      -> SherpaSTT
+# cfg.tts_backend == "piper"       -> PiperTTS
 
 cfg = get_lang("en")
-# cfg.stt_backend == "whisper"      -> WhisperSTT
-# cfg.tts_backend == "kokoro"       -> KokoroTTS
+# cfg.stt_backend == "whisper"     -> WhisperSTT
+# cfg.tts_backend == "kokoro"      -> KokoroTTS
+
+cfg = get_lang("ko")
+# cfg.tts_backend == "supertonic"  -> SupertonicTTS
 ```
 
 ## VAD (Voice Activity Detection)
@@ -152,8 +159,21 @@ flowchart LR
     MIC -->|on_interrupt| PROC
 ```
 
-- **Main thread**: Textual TUI event loop
+- **Main thread**: Textual TUI event loop (or FastAPI event loop in web mode)
 - **Audio thread**: `sounddevice` callback for mic input
 - **Worker threads**: `@work(thread=True)` for STT/LLM/TTS processing
 - **Lock**: `_processing` mutex prevents overlapping utterances
 - **Event**: `_interrupted` signals playback cancellation
+
+## Web UI Architecture
+
+In `--web-ui` mode, the pipeline runs as a FastAPI server with WebSocket:
+
+```
+Browser ↔ WebSocket ↔ FastAPI ↔ STT/LLM/TTS pipeline
+```
+
+- Audio is captured by the browser's `MediaRecorder` API and streamed as raw PCM
+- TTS audio is sent back as WAV binary frames
+- Language/voice switching is done via JSON control messages
+- Text input and `/say` commands bypass STT and go directly to LLM or TTS
