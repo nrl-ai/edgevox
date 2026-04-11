@@ -16,7 +16,7 @@ class LanguageConfig:
 
     code: str  # ISO 639-1 code
     name: str  # Display name
-    stt_backend: str = "whisper"  # "whisper" or "chunkformer"
+    stt_backend: str = "whisper"  # "whisper", "sherpa", or "chunkformer"
     tts_backend: str = "kokoro"  # "kokoro" or "piper"
     kokoro_lang: str = "a"  # Kokoro lang_code (ignored if tts_backend != "kokoro")
     default_voice: str = "af_heart"  # Default TTS voice
@@ -127,50 +127,30 @@ _reg(
     LanguageConfig(
         code="vi",
         name="Vietnamese",
-        stt_backend="chunkformer",
+        stt_backend="sherpa",
         tts_backend="piper",
-        default_voice="vi-female",
+        default_voice="vi-vais1000",
         test_phrase="San sang.",
     )
 )
 
-# --- Additional Whisper-only languages (TTS via Kokoro English fallback) ---
-# These use Whisper STT but fall back to Kokoro English TTS since Kokoro
-# doesn't have native support. Users can override voice per-language.
+# --- Piper-supported languages (lightweight VITS ONNX models) ---
 
-_reg(
-    LanguageConfig(
-        code="ko",
-        name="Korean",
-        kokoro_lang="a",
-        default_voice="af_heart",
-        test_phrase="Annyeonghaseyo.",
-    )
-)
 _reg(
     LanguageConfig(
         code="de",
         name="German",
-        kokoro_lang="a",
-        default_voice="af_heart",
+        tts_backend="piper",
+        default_voice="de-thorsten",
         test_phrase="Hallo.",
-    )
-)
-_reg(
-    LanguageConfig(
-        code="th",
-        name="Thai",
-        kokoro_lang="a",
-        default_voice="af_heart",
-        test_phrase="Sawasdee.",
     )
 )
 _reg(
     LanguageConfig(
         code="ru",
         name="Russian",
-        kokoro_lang="a",
-        default_voice="af_heart",
+        tts_backend="piper",
+        default_voice="ru-irina",
         test_phrase="Privet.",
     )
 )
@@ -178,8 +158,8 @@ _reg(
     LanguageConfig(
         code="ar",
         name="Arabic",
-        kokoro_lang="a",
-        default_voice="af_heart",
+        tts_backend="piper",
+        default_voice="ar-kareem",
         test_phrase="Marhaba.",
     )
 )
@@ -187,9 +167,33 @@ _reg(
     LanguageConfig(
         code="id",
         name="Indonesian",
-        kokoro_lang="a",
-        default_voice="af_heart",
+        tts_backend="piper",
+        default_voice="id-news",
         test_phrase="Halo.",
+    )
+)
+
+# --- Supertonic TTS (lightweight ONNX, real-time on CPU) ---
+
+_reg(
+    LanguageConfig(
+        code="ko",
+        name="Korean",
+        tts_backend="supertonic",
+        default_voice="ko-F1",
+        test_phrase="안녕하세요.",
+    )
+)
+
+# --- PyThaiTTS (Tacotron2 ONNX, Apache 2.0) ---
+
+_reg(
+    LanguageConfig(
+        code="th",
+        name="Thai",
+        tts_backend="pythaitts",
+        default_voice="th-default",
+        test_phrase="สวัสดี.",
     )
 )
 

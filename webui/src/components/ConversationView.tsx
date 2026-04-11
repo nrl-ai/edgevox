@@ -1,13 +1,21 @@
 import { useEffect, useRef } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { cn } from "@/lib/utils";
 
 export interface Message {
   id: string;
   role: "user" | "bot";
   text: string;
   pending?: boolean;
+  timestamp?: string;
 }
+
+const LOGO = [
+  " ███████ ██████   ██████  ███████ ██    ██  ██████  ██   ██",
+  " ██      ██   ██ ██       ██      ██    ██ ██    ██  ██ ██",
+  " █████   ██   ██ ██   ███ █████   ██    ██ ██    ██   ███",
+  " ██      ██   ██ ██    ██ ██       ██  ██  ██    ██  ██ ██",
+  " ███████ ██████   ██████  ███████   ████    ██████  ██   ██",
+];
 
 export function ConversationView({ messages }: { messages: Message[] }) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -17,32 +25,51 @@ export function ConversationView({ messages }: { messages: Message[] }) {
   }, [messages]);
 
   return (
-    <ScrollArea className="h-full pr-4">
-      <div className="flex flex-col gap-3 p-4">
+    <ScrollArea className="h-full">
+      <div className="flex flex-col p-4 font-mono text-sm leading-relaxed">
+        {/* ASCII splash */}
+        <div className="mb-1">
+          {LOGO.map((line, i) => (
+            <div key={i} className="text-neon-green font-bold whitespace-pre">
+              {line}
+            </div>
+          ))}
+          <div className="text-neon-cyan">{"  Sub-second local voice AI  v0.1.0"}</div>
+        </div>
+
         {messages.length === 0 && (
-          <p className="text-center text-sm text-muted-foreground py-8">
-            Press <span className="font-mono">Start</span> and say something — I'm listening.
+          <p className="text-muted-foreground py-4">
+            Press <span className="text-neon-green font-bold">Start</span> and say something.
           </p>
         )}
+
         {messages.map((m) => (
-          <div
-            key={m.id}
-            className={cn(
-              "flex",
-              m.role === "user" ? "justify-end" : "justify-start"
+          <div key={m.id}>
+            {m.role === "user" && (
+              <>
+                {/* TUI-style separator */}
+                <div className="text-[#1e3a2e] select-none whitespace-pre">
+                  {"─".repeat(60)}
+                </div>
+                <div>
+                  <span className="text-neon-green font-bold"> ▶ You </span>
+                  <span className="text-muted-foreground"> {m.timestamp || ""} </span>
+                </div>
+                <div className="text-foreground pl-3 whitespace-pre-wrap">
+                  {"   "}{m.text}
+                </div>
+              </>
             )}
-          >
-            <div
-              className={cn(
-                "max-w-[80%] rounded-2xl px-4 py-2 text-sm leading-relaxed shadow-sm",
-                m.role === "user"
-                  ? "bg-primary text-primary-foreground rounded-br-sm"
-                  : "bg-secondary text-secondary-foreground rounded-bl-sm",
-                m.pending && "opacity-80"
-              )}
-            >
-              {m.text || (m.pending ? "…" : "")}
-            </div>
+            {m.role === "bot" && (
+              <>
+                <div>
+                  <span className="text-neon-cyan font-bold"> ◀ Bot</span>
+                </div>
+                <div className={`text-foreground pl-3 whitespace-pre-wrap ${m.pending ? "opacity-70" : ""}`}>
+                  {"   "}{m.text || (m.pending ? "… thinking" : "")}
+                </div>
+              </>
+            )}
           </div>
         ))}
         <div ref={endRef} />

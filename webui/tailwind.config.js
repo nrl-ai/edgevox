@@ -34,6 +34,15 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        /* TUI accent palette */
+        neon: {
+          green: "#00ff88",
+          cyan: "#00e5ff",
+          purple: "#c084fc",
+          blue: "#60a5fa",
+          orange: "#ffb020",
+          red: "#ff4444",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",

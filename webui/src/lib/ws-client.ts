@@ -3,7 +3,7 @@
 // announcement.
 
 export type ServerMessage =
-  | { type: "ready"; session_id: string; language: string; languages: string[]; voice: string; tts_sample_rate: number; sample_rate: number; frame_size: number }
+  | { type: "ready"; session_id: string; language: string; languages: string[]; voice: string; voices: string[]; tts_sample_rate: number; sample_rate: number; frame_size: number }
   | { type: "state"; value: "listening" | "transcribing" | "thinking" | "speaking" }
   | { type: "level"; value: number }
   | { type: "user_text"; text: string; latency: number }
@@ -12,7 +12,9 @@ export type ServerMessage =
   | { type: "bot_text"; text: string; latency: number }
   | { type: "metrics"; stt: number; llm: number; ttft: number; tts: number; total: number; audio_duration: number }
   | { type: "info"; message: string }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "language_changed"; language: string; voice?: string; voices?: string[] }
+  | { type: "voice_changed"; voice: string };
 
 export interface WsHandlers {
   onJson: (msg: ServerMessage) => void;

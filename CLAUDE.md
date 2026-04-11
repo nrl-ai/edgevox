@@ -8,24 +8,40 @@ Sub-second local voice AI for robots and edge devices. Pure-Python package, no c
 edgevox/
 ├── edgevox/            # Source package
 │   ├── audio/          # VAD, mic capture, playback
-│   ├── stt/            # faster-whisper wrappers
+│   ├── stt/            # STT backends (faster-whisper, sherpa-onnx)
 │   ├── llm/            # llama.cpp / Gemma integration
-│   ├── tts/            # Kokoro / Piper TTS
+│   ├── tts/            # TTS backends (Kokoro, Piper, Supertonic, PyThaiTTS)
 │   ├── core/           # Pipeline orchestration
 │   ├── cli/            # CLI entrypoints
 │   ├── ui/             # TUI widgets
 │   ├── integrations/   # ROS2 bridge, etc.
 │   ├── tui.py          # Main TUI app
 │   └── setup_models.py # Model downloader
+│   ├── server/         # FastAPI web UI + WebSocket server
+├── webui/              # React frontend (Vite + Tailwind)
+├── scripts/            # Utility scripts (model upload, etc.)
+├── voices/             # Voice config files
 ├── docs/               # Project docs
 ├── website/            # VitePress site
 └── pyproject.toml
 ```
 
 Entrypoints (see `pyproject.toml`):
-- `edgevox` → `edgevox.tui:main`
+- `edgevox` → `edgevox.tui:main` (TUI default, `--web-ui` for web, `--simple-ui` for CLI)
 - `edgevox-cli` → `edgevox.cli.main:main`
 - `edgevox-setup` → `edgevox.setup_models:main`
+
+## Supported languages & backends
+
+| Language | STT | TTS |
+|----------|-----|-----|
+| English, French, Spanish, etc. | faster-whisper | Kokoro |
+| Vietnamese | sherpa-onnx (zipformer) | Piper |
+| German, Russian, Arabic, Indonesian | faster-whisper | Piper |
+| Korean | faster-whisper | Supertonic |
+| Thai | faster-whisper | PyThaiTTS |
+
+Models are hosted on `nrl-ai/edgevox-models` (HuggingFace) with fallback to upstream repos.
 
 ## Coding rules
 

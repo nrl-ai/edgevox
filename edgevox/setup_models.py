@@ -36,6 +36,14 @@ def download_kokoro():
     print("  Kokoro ready.")
 
 
+def download_sherpa_vi():
+    from edgevox.stt.sherpa_stt import _ensure_model
+
+    print("Downloading Sherpa-ONNX Zipformer Vietnamese (30M int8) ...")
+    model_dir = _ensure_model()
+    print(f"  Cached at: {model_dir}")
+
+
 def download_silero_vad():
     from silero_vad import load_silero_vad
 
@@ -61,6 +69,8 @@ def main():
     download_silero_vad()
     print()
     download_whisper(args.whisper_model)
+    print()
+    download_sherpa_vi()
     print()
     download_llm(filename=filename)
     print()

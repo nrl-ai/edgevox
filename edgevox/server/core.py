@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from edgevox.core.config import LANGUAGES, get_lang
 from edgevox.llm import LLM
 from edgevox.stt import create_stt
-from edgevox.tts import create_tts
+from edgevox.tts import PIPER_VOICES, create_tts
 
 if TYPE_CHECKING:
     from edgevox.server.session import SessionState
@@ -68,11 +68,57 @@ class ServerCore:
         """Return a copy of the system-prompt-only history for new sessions."""
         return [dict(m) for m in self._base_history]
 
+    def voices_for_language(self, language: str) -> list[str]:
+        """Return available voice IDs for the given language."""
+        cfg = get_lang(language)
+        if cfg.tts_backend == "kokoro":
+            all_kokoro = [
+                "af_heart",
+                "af_bella",
+                "af_nicole",
+                "af_sarah",
+                "af_sky",
+                "am_adam",
+                "am_michael",
+                "bf_emma",
+                "bf_isabella",
+                "bm_george",
+                "bm_lewis",
+                "ef_dora",
+                "em_alex",
+                "ff_siwis",
+                "hf_alpha",
+                "hm_omega",
+                "if_sara",
+                "im_nicola",
+                "jf_alpha",
+                "jm_beta",
+                "pf_dora",
+                "pm_alex",
+                "zf_xiaobei",
+                "zf_xiaoni",
+                "zm_yunjian",
+            ]
+            prefix = cfg.kokoro_lang
+            matching = [v for v in all_kokoro if v.startswith(prefix)]
+            others = [v for v in all_kokoro if not v.startswith(prefix)]
+            return matching + others
+        elif cfg.tts_backend == "supertonic":
+            from edgevox.tts.supertonic import SUPERTONIC_VOICES
+
+            return list(SUPERTONIC_VOICES.keys())
+        else:
+            prefix = cfg.code + "-"
+            matching = [v for v in PIPER_VOICES if v.startswith(prefix)]
+            others = [v for v in PIPER_VOICES if not v.startswith(prefix)]
+            return matching + others
+
     def info(self) -> dict:
         return {
             "language": self.language,
             "languages": sorted(LANGUAGES.keys()),
             "voice": self.voice,
+            "voices": self.voices_for_language(self.language),
             "stt": type(self.stt).__name__,
             "tts": type(self.tts).__name__,
             "tts_sample_rate": getattr(self.tts, "sample_rate", 24_000),

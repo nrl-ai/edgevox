@@ -28,6 +28,7 @@ from typing import ClassVar
 
 import numpy as np
 import sounddevice as sd
+import uvicorn
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -42,10 +43,13 @@ from textual.widgets.option_list import Option
 from edgevox.audio import TARGET_SAMPLE_RATE as MIC_SAMPLE_RATE
 from edgevox.audio import AudioRecorder, play_audio, player
 from edgevox.audio.wakeword import WakeWordDetector
+from edgevox.cli.main import TextBot, VoiceBot
 from edgevox.core.config import LANGUAGES, get_lang, needs_stt_reload
 from edgevox.core.config import lang_options as get_lang_options
 from edgevox.core.pipeline import stream_sentences
 from edgevox.llm import LLM
+from edgevox.server.core import ServerCore
+from edgevox.server.main import create_app
 from edgevox.stt import STT, create_stt
 from edgevox.tts import BaseTTS, create_tts
 
@@ -539,7 +543,8 @@ COMMANDS = {
 
 MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3", "chunkformer"]
 
-KOKORO_VOICES = [
+ALL_VOICES = [
+    # Kokoro voices
     "af_heart",
     "af_bella",
     "af_nicole",
@@ -565,9 +570,93 @@ KOKORO_VOICES = [
     "zf_xiaobei",
     "zf_xiaoni",
     "zm_yunjian",
-    "vi-female",
-    "vi-male",
+    # Piper Vietnamese
+    "vi-vais1000",
+    "vi-25hours",
+    "vi-vivos",
+    # Piper German
+    "de-thorsten-high",
+    "de-thorsten",
+    "de-thorsten-low",
+    "de-thorsten-emotional",
+    "de-kerstin",
+    "de-ramona",
+    "de-eva",
+    "de-karlsson",
+    "de-pavoque",
+    "de-mls",
+    # Piper Russian
+    "ru-irina",
+    "ru-dmitri",
+    "ru-denis",
+    "ru-ruslan",
+    # Piper Arabic
+    "ar-kareem",
+    "ar-kareem-low",
+    # Piper Indonesian
+    "id-news",
+    # Supertonic Korean
+    "ko-F1",
+    "ko-F2",
+    "ko-F3",
+    "ko-F4",
+    "ko-F5",
+    "ko-M1",
+    "ko-M2",
+    "ko-M3",
+    "ko-M4",
+    "ko-M5",
+    # PyThaiTTS
+    "th-default",
 ]
+
+
+def voice_options(language: str) -> list[tuple[str, str]]:
+    """Return (display_name, voice_id) tuples for the given language's TTS backend."""
+    cfg = get_lang(language)
+    if cfg.tts_backend == "kokoro":
+        kokoro_voices = [
+            "af_heart",
+            "af_bella",
+            "af_nicole",
+            "af_sarah",
+            "af_sky",
+            "am_adam",
+            "am_michael",
+            "bf_emma",
+            "bf_isabella",
+            "bm_george",
+            "bm_lewis",
+            "ef_dora",
+            "em_alex",
+            "ff_siwis",
+            "hf_alpha",
+            "hm_omega",
+            "if_sara",
+            "im_nicola",
+            "jf_alpha",
+            "jm_beta",
+            "pf_dora",
+            "pm_alex",
+            "zf_xiaobei",
+            "zf_xiaoni",
+            "zm_yunjian",
+        ]
+        prefix = cfg.kokoro_lang
+        matching = [v for v in kokoro_voices if v.startswith(prefix)]
+        others = [v for v in kokoro_voices if not v.startswith(prefix)]
+        return [(v, v) for v in matching] + [(v, v) for v in others]
+    elif cfg.tts_backend == "supertonic":
+        from edgevox.tts.supertonic import SUPERTONIC_VOICES
+
+        return [(f"{name} — {desc}", name) for name, desc in SUPERTONIC_VOICES.items()]
+    else:
+        from edgevox.tts import get_piper_voices
+
+        prefix = cfg.code + "-"
+        matching = [v for v in get_piper_voices() if v.startswith(prefix)]
+        others = [v for v in get_piper_voices() if not v.startswith(prefix)]
+        return [(v, v) for v in matching] + [(v, v) for v in others]
 
 
 def get_completions(value: str) -> list[tuple[str, str]]:
@@ -594,7 +683,7 @@ def get_completions(value: str) -> list[tuple[str, str]]:
     if cmd == "/model" and has_space:
         return [(f"/model {m}", "") for m in MODEL_SIZES if not arg or m.startswith(arg.lower())]
     if cmd == "/voice" and has_space:
-        return [(f"/voice {v}", "") for v in KOKORO_VOICES if not arg or v.startswith(arg.lower())]
+        return [(f"/voice {v}", "") for v in ALL_VOICES if not arg or v.startswith(arg.lower())]
     if cmd == "/mic" and has_space:
         return [
             (f"/mic {idx}", name)
@@ -709,6 +798,8 @@ class EdgeVoxApp(App):
                 default_spk = spk_devices[0][1] if spk_devices else 0
 
         lang_options = get_lang_options()
+        voice_opts = voice_options(self._language)
+        default_voice = self._voice or get_lang(self._language).default_voice
 
         yield Header(show_clock=True)
         yield StatusBar(id="status-bar")
@@ -732,6 +823,7 @@ class EdgeVoxApp(App):
                     yield Select(mic_options, value=default_mic, prompt="Mic", id="mic-select")
                     yield Select(spk_options, value=default_spk, prompt="Spk", id="spk-select")
                     yield Select(lang_options, value=self._language, prompt="Lang", id="lang-select")
+                    yield Select(voice_opts, value=default_voice, prompt="Voice", id="voice-select")
         yield OptionList(id="completion-menu")
         with Horizontal(id="command-input"):
             yield Input(
@@ -760,6 +852,8 @@ class EdgeVoxApp(App):
             self._switch_speaker(int(event.value))
         elif event.select.id == "lang-select":
             self._switch_language(str(event.value))
+        elif event.select.id == "voice-select":
+            self._switch_voice(str(event.value))
 
     def _is_menu_visible(self) -> bool:
         return self.query_one("#completion-menu", OptionList).has_class("visible")
@@ -882,8 +976,7 @@ class EdgeVoxApp(App):
         elif command == "lang" and arg:
             self._switch_language(arg.strip())
         elif command == "voice" and arg:
-            self._voice = arg.strip()
-            self.call_from_thread(chat.write, Text(f"  Voice set to: {self._voice}", style="italic yellow"))
+            self._switch_voice(arg.strip())
         elif command == "export":
             self.action_export_chat()
         elif command == "say" and arg:
@@ -1131,6 +1224,18 @@ class EdgeVoxApp(App):
         except Exception:
             pass
 
+    def _refresh_voice_select(self, language: str):
+        """Replace voice selector options for the given language and select the default."""
+        try:
+            sel = self.query_one("#voice-select", Select)
+            opts = voice_options(language)
+            cfg = get_lang(language)
+            self._suppress_completion = True
+            sel.set_options(opts)
+            sel.value = self._voice or cfg.default_voice
+        except Exception:
+            pass
+
     def _switch_mic(self, device_idx: int):
         chat = self.query_one("#chat-panel", RichLog)
         self._mic_device = device_idx
@@ -1162,6 +1267,19 @@ class EdgeVoxApp(App):
             chat.write(Text(f"  Speaker switch failed: {e}", style="bold red"))
 
     @work(thread=True)
+    def _switch_voice(self, new_voice: str):
+        if new_voice == self._voice:
+            return
+        chat = self.query_one("#chat-panel", RichLog)
+        self._voice = new_voice
+        self.call_from_thread(chat.write, Text(f"  Voice set to: {self._voice}", style="italic yellow"))
+        self._tts = create_tts(language=self._language, voice=self._voice, backend=self._tts_backend)
+        cfg = get_lang(self._language)
+        self._tts.synthesize(cfg.test_phrase)
+        self.call_from_thread(self._sync_select, "voice-select", new_voice)
+        self.call_from_thread(chat.write, Text(f"  Voice: {self._voice} ready!", style="italic #00ff88"))
+
+    @work(thread=True)
     def _switch_language(self, lang: str):
         if lang == self._language:
             return
@@ -1175,6 +1293,8 @@ class EdgeVoxApp(App):
             self.call_from_thread(chat.write, Text(f"  Reloading STT for {cfg.name}...", style="dim"))
             self._stt = create_stt(language=lang, device=self._stt_device)
 
+        # Reset voice to the new language's default
+        self._voice = cfg.default_voice
         self._tts = create_tts(language=lang, voice=self._voice, backend=self._tts_backend)
         self._tts.synthesize(cfg.test_phrase)
 
@@ -1194,6 +1314,7 @@ class EdgeVoxApp(App):
             tts_name,
         )
         self.call_from_thread(self._sync_select, "lang-select", lang)
+        self.call_from_thread(self._refresh_voice_select, lang)
         self.call_from_thread(setattr, self.query_one("#status-bar", StatusBar), "language", lang)
         self.call_from_thread(chat.write, Text(f"  Language: {cfg.name} ready!", style="italic #00ff88"))
 
@@ -1317,12 +1438,25 @@ class EdgeVoxApp(App):
                 parts += [("  ", ""), (v, "bold cyan"), (f"{marker}\n", "yellow")]
             if others:
                 parts += [("  Other: ", "dim"), (", ".join(others) + "\n", "dim")]
-        else:
-            from edgevox.tts import PIPER_VI_VOICES
+        elif cfg.tts_backend == "supertonic":
+            from edgevox.tts.supertonic import SUPERTONIC_VOICES
 
-            for name in PIPER_VI_VOICES:
+            for name, desc in SUPERTONIC_VOICES.items():
+                marker = " *" if name == cfg.default_voice else ""
+                parts += [("  ", ""), (name, "bold cyan"), (f"  {desc}{marker}\n", "yellow" if marker else "dim")]
+        elif cfg.tts_backend == "pythaitts":
+            parts += [("  ", ""), ("th-default", "bold cyan"), (" *\n", "yellow")]
+        else:
+            from edgevox.tts import get_piper_voices
+
+            prefix = cfg.code + "-"
+            matching = [v for v in get_piper_voices() if v.startswith(prefix)]
+            others = [v for v in get_piper_voices() if not v.startswith(prefix)]
+            for name in matching:
                 marker = " *" if name == cfg.default_voice else ""
                 parts += [("  ", ""), (name, "bold cyan"), (f"{marker}\n", "yellow")]
+            if others:
+                parts += [("  Other: ", "dim"), (", ".join(others) + "\n", "dim")]
         chat.write(Text.assemble(*parts))
 
     def _list_langs(self):
@@ -1581,6 +1715,10 @@ class EdgeVoxApp(App):
             except Exception:
                 pass
         finally:
+            # Immediately re-enable the mic so the user doesn't have to wait
+            # through the echo cooldown after the last sentence.
+            if self._recorder:
+                self._recorder.force_resume()
             self._processing.release()
             if self._wakeword and self._activated:
                 self._extend_session()
@@ -1725,12 +1863,15 @@ class EdgeVoxApp(App):
             self._bridge.shutdown()
 
 
-def main():
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the shared argument parser used by all UI modes."""
     parser = argparse.ArgumentParser(
         description="EdgeVox — Sub-second local voice AI for robots and edge devices",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  edgevox                                          # Start with defaults (auto-detect all)
+  edgevox                                          # TUI (default)
+  edgevox --simple-ui                              # Simple CLI interface
+  edgevox --web-ui                                 # Web UI (FastAPI + WebSocket)
   edgevox --stt large-v3-turbo --llm /path/to.gguf # Custom STT + local LLM
   edgevox --llm hf:bartowski/Phi-4-mini-instruct-GGUF:Phi-4-mini-instruct-Q4_K_M.gguf
   edgevox --tts piper --voice vi-female            # Force Piper TTS backend
@@ -1738,6 +1879,13 @@ def main():
   edgevox --language vi                            # Vietnamese mode
 """,
     )
+
+    # UI mode selection (mutually exclusive)
+    ui_group = parser.add_mutually_exclusive_group()
+    ui_group.add_argument("--simple-ui", action="store_true", help="Simple CLI (no TUI)")
+    ui_group.add_argument("--web-ui", action="store_true", help="Web UI served via FastAPI + WebSocket")
+
+    # Model options (shared across all modes)
     parser.add_argument(
         "--stt",
         type=str,
@@ -1760,6 +1908,8 @@ def main():
     )
     parser.add_argument("--voice", type=str, default=None, help="TTS voice name (default: per language)")
     parser.add_argument("--language", type=str, default="en", help="Language: en, vi, fr, es, etc.")
+
+    # TUI / simple-ui options
     parser.add_argument("--wakeword", type=str, default=None, help="Wake word (e.g., 'hey jarvis')")
     parser.add_argument("--mic", type=int, default=None, help="Microphone device index")
     parser.add_argument("--spk", type=int, default=None, help="Speaker device index")
@@ -1770,11 +1920,32 @@ def main():
         help="Seconds of silence before wakeword session ends (default: 30)",
     )
     parser.add_argument("--ros2", action="store_true", help="Enable ROS2 bridge (publishes to /edgevox/* topics)")
+    parser.add_argument("--text-mode", action="store_true", help="Text-only mode, no mic (simple-ui only)")
 
+    # Web UI options
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Web UI bind host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8765, help="Web UI bind port (default: 8765)")
+
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
+
+    return parser
+
+
+def main():
+    parser = _build_parser()
     args = parser.parse_args()
 
+    if args.web_ui:
+        _run_web_ui(args)
+    elif args.simple_ui:
+        _run_simple_ui(args)
+    else:
+        _run_tui(args)
+
+
+def _run_tui(args: argparse.Namespace) -> None:
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if args.verbose else logging.INFO,
         filename="/tmp/edgevox.log",
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
@@ -1793,6 +1964,46 @@ def main():
         ros2=args.ros2,
     )
     app.run()
+
+
+def _run_simple_ui(args: argparse.Namespace) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+    if args.text_mode:
+        bot = TextBot(llm_model=args.llm, tts_backend=args.tts, voice=args.voice, language=args.language)
+    else:
+        bot = VoiceBot(
+            stt_model=args.stt,
+            stt_device=args.stt_device,
+            llm_model=args.llm,
+            tts_backend=args.tts,
+            voice=args.voice,
+            language=args.language,
+        )
+    bot.run()
+
+
+def _run_web_ui(args: argparse.Namespace) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+    core = ServerCore(
+        language=args.language,
+        stt_model=args.stt,
+        stt_device=args.stt_device,
+        llm_model=args.llm,
+        tts_backend=args.tts,
+        voice=args.voice,
+    )
+    app = create_app(core)
+
+    log.info("EdgeVox server listening on http://%s:%d", args.host, args.port)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":

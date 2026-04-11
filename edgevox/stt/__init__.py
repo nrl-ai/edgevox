@@ -21,8 +21,19 @@ def create_stt(language: str = "en", model_size: str | None = None, device: str 
     from edgevox.core.config import get_lang
 
     cfg = get_lang(language)
-    use_chunkformer = model_size == "chunkformer" or (cfg.stt_backend == "chunkformer" and model_size is None)
 
+    # Sherpa-ONNX Zipformer: fast Vietnamese transducer (default for vi)
+    use_sherpa = model_size == "sherpa" or (cfg.stt_backend == "sherpa" and model_size is None)
+    if use_sherpa:
+        try:
+            from edgevox.stt.sherpa_stt import SherpaSTT
+
+            return SherpaSTT(device=device)
+        except Exception as e:
+            log.warning(f"Sherpa-ONNX failed to load ({e}), falling back to Whisper")
+
+    # ChunkFormer: legacy Vietnamese backend
+    use_chunkformer = model_size == "chunkformer" or (cfg.stt_backend == "chunkformer" and model_size is None)
     if use_chunkformer:
         try:
             from edgevox.stt.chunkformer import ChunkFormerSTT

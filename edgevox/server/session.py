@@ -85,13 +85,24 @@ class SessionState:
         return self._level
 
     def feed_audio(self, samples: np.ndarray) -> None:
-        """Push a buffer of float32 PCM @ 16 kHz through VAD."""
+        """Push a buffer of float32 PCM @ 16 kHz through VAD.
+
+        While the session is busy (processing a turn), audio is still received
+        for level metering but VAD processing is skipped to prevent state
+        pollution from echo/noise during bot playback — mirroring how the TUI
+        pauses the mic during TTS output.
+        """
         if samples.size == 0:
             return
         self.last_active = time.time()
         for frame in chunk_pcm(samples):
             rms = float(np.sqrt(np.mean(frame**2)))
             self._level = min(1.0, rms * 10.0)
+
+            # Skip VAD while busy to avoid accumulating noise/echo in the
+            # speech buffer and corrupting the LSTM state.
+            if self.busy:
+                continue
 
             is_speech = self._vad.is_speech(frame)
             if is_speech:

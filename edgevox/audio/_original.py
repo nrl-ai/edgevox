@@ -284,6 +284,7 @@ class AudioRecorder:
         self._audio_q: queue.Queue[np.ndarray] = queue.Queue()
         self._running = False
         self._suppressed = False  # True while echo-suppressed (during/after playback)
+        self._suppress_gen = 0  # generation counter — stale cooldown timers check this
         self._stream: sd.InputStream | None = None
         self._thread: threading.Thread | None = None
         # Get sample rate and channel count for the selected device
@@ -297,6 +298,7 @@ class AudioRecorder:
     def start(self):
         self._running = True
         self._suppressed = False
+        self._suppress_gen = 0
         _sd()
         self._stream = sd.InputStream(
             device=self._device,
@@ -320,14 +322,24 @@ class AudioRecorder:
 
     def pause(self):
         """Suppress audio processing (echo suppression). Called by player."""
+        self._suppress_gen += 1
         self._suppressed = True
-        log.debug("Mic suppressed for echo cancellation")
+        log.debug("Mic suppressed for echo cancellation (gen=%d)", self._suppress_gen)
 
     def resume_after_cooldown(self):
-        """Resume audio processing after cooldown. Called by player."""
+        """Resume audio processing after cooldown. Called by player.
+
+        Uses a generation counter so that a stale cooldown timer (from an earlier
+        sentence) does not un-suppress the mic while a later sentence is playing.
+        """
+        gen = self._suppress_gen
 
         def _delayed_resume():
             time.sleep(ECHO_COOLDOWN_SECS)
+            # Only resume if no newer pause() has been issued since we started
+            if self._suppress_gen != gen:
+                log.debug("Skipping stale echo cooldown (gen=%d, current=%d)", gen, self._suppress_gen)
+                return
             # Drain any buffered audio from during suppression
             while not self._audio_q.empty():
                 try:
@@ -336,9 +348,34 @@ class AudioRecorder:
                     break
             self._vad.reset()
             self._suppressed = False
-            log.debug("Mic resumed after echo cooldown")
+            log.debug("Mic resumed after echo cooldown (gen=%d)", gen)
 
         threading.Thread(target=_delayed_resume, daemon=True).start()
+
+    def force_resume(self, delay: float = 0.3):
+        """Cancel echo suppression after a short delay and reset VAD.
+
+        Called when the processing pipeline finishes so the mic doesn't stay
+        deaf during the full cooldown window. A brief delay (default 0.3s)
+        lets residual echo from the speakers die down.
+        """
+        self._suppress_gen += 1  # invalidate any pending cooldown timers
+        gen = self._suppress_gen
+
+        def _resume():
+            time.sleep(delay)
+            if self._suppress_gen != gen:
+                return
+            while not self._audio_q.empty():
+                try:
+                    self._audio_q.get_nowait()
+                except queue.Empty:
+                    break
+            self._vad.reset()
+            self._suppressed = False
+            log.debug("Mic force-resumed after %.1fs (gen=%d)", delay, gen)
+
+        threading.Thread(target=_resume, daemon=True).start()
 
     def _audio_callback(self, indata, frames, time_info, status):
         if self._suppressed:

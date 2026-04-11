@@ -8,10 +8,12 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-PIPER_VI_VOICES = {
-    "vi-female": "vi_VN-vais1000-medium",
-    "vi-male": "vi_VN-25hours_single-low",
-}
+
+def get_piper_voices() -> dict[str, str]:
+    """Return available Piper voice IDs, lazily imported to avoid circular deps."""
+    from edgevox.tts.piper import PiperTTS
+
+    return dict(PiperTTS._VOICES)
 
 
 class BaseTTS:
@@ -32,7 +34,7 @@ def create_tts(language: str = "en", voice: str | None = None, backend: str | No
     Args:
         language: ISO 639-1 language code.
         voice: TTS voice name (backend-specific).
-        backend: Force a TTS backend ("kokoro" or "piper"). None = auto from language config.
+        backend: Force a TTS backend ("kokoro", "piper", "supertonic", or "pythaitts"). None = auto from language config.
     """
     from edgevox.core.config import get_lang
 
@@ -42,6 +44,14 @@ def create_tts(language: str = "en", voice: str | None = None, backend: str | No
         from edgevox.tts.piper import PiperTTS
 
         return PiperTTS(voice=voice or cfg.default_voice)
+    elif tts_backend == "supertonic":
+        from edgevox.tts.supertonic import SupertonicTTS
+
+        return SupertonicTTS(voice=voice or cfg.default_voice, lang=language)
+    elif tts_backend == "pythaitts":
+        from edgevox.tts.pythaitts_backend import PyThaiTTSBackend
+
+        return PyThaiTTSBackend(voice=voice or cfg.default_voice)
     else:
         from edgevox.tts.kokoro import KokoroTTS
 

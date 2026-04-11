@@ -3,41 +3,43 @@
 @tailwind utilities;
 
 @layer base {
+  /* EdgeVox dark cyberpunk theme — matches the Textual TUI palette */
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
-    --primary: 240 5.9% 10%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 240 5.9% 10%;
-    --radius: 0.75rem;
+    --background: 210 40% 5%;       /* #0a0e14 */
+    --foreground: 210 14% 80%;      /* #c9d1d9 */
+    --card: 210 30% 7%;             /* #0d1117 */
+    --card-foreground: 210 14% 80%;
+    --primary: 153 100% 50%;        /* #00ff88 neon green */
+    --primary-foreground: 210 40% 5%;
+    --secondary: 210 25% 9%;        /* #111820 */
+    --secondary-foreground: 210 14% 80%;
+    --muted: 210 25% 9%;
+    --muted-foreground: 210 8% 57%; /* #8b949e */
+    --accent: 160 40% 17%;          /* #1e3a2e teal border */
+    --accent-foreground: 153 100% 50%;
+    --border: 160 40% 17%;          /* #1e3a2e */
+    --input: 210 30% 7%;
+    --ring: 153 100% 50%;
+    --radius: 0.5rem;
   }
 
+  /* Single dark theme — no light mode */
   .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 6% 8%;
-    --card-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
+    --background: 210 40% 5%;
+    --foreground: 210 14% 80%;
+    --card: 210 30% 7%;
+    --card-foreground: 210 14% 80%;
+    --primary: 153 100% 50%;
+    --primary-foreground: 210 40% 5%;
+    --secondary: 210 25% 9%;
+    --secondary-foreground: 210 14% 80%;
+    --muted: 210 25% 9%;
+    --muted-foreground: 210 8% 57%;
+    --accent: 160 40% 17%;
+    --accent-foreground: 153 100% 50%;
+    --border: 160 40% 17%;
+    --input: 210 30% 7%;
+    --ring: 153 100% 50%;
   }
 
   * {
@@ -45,7 +47,7 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-      "Helvetica Neue", Arial, sans-serif;
+    font-family: "JetBrains Mono", "Fira Code", "SF Mono", "Cascadia Code",
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   }
 }
