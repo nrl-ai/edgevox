@@ -59,13 +59,15 @@ class ChunkFormerSTT(BaseSTT):
             Path(tmp_path).unlink(missing_ok=True)
 
         if isinstance(result, list):
-            text = " ".join(
-                r.get("decode", r.get("text", str(r))) if isinstance(r, dict) else str(r) for r in result
-            ).strip()
+            text = (
+                " ".join(r.get("decode", r.get("text", str(r))) if isinstance(r, dict) else str(r) for r in result)
+                .strip()
+                .capitalize()
+            )
         elif isinstance(result, dict):
-            text = result.get("decode", result.get("text", str(result))).strip()
+            text = result.get("decode", result.get("text", str(result))).strip().capitalize()
         else:
-            text = str(result).strip()
+            text = str(result).strip().capitalize()
 
         elapsed = time.perf_counter() - t0
         if not self._warmed_up:

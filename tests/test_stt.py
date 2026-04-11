@@ -117,7 +117,7 @@ class TestSherpaSTT:
 
         stt = SherpaSTT()
         text = stt.transcribe(np.zeros(16000, dtype=np.float32))
-        assert text == "xin chào"
+        assert text == "Xin chào"
 
 
 class TestChunkFormerSTT:
@@ -152,7 +152,7 @@ class TestChunkFormerSTT:
 
         stt = ChunkFormerSTT()
         text = stt.transcribe(np.zeros(16000, dtype=np.float32))
-        assert text == "xin chào"
+        assert text == "Xin chào"
 
     @patch("edgevox.core.gpu.has_cuda", return_value=False)
     def test_transcribe_dict_result(self, _cuda, _mock_chunkformer_module):
@@ -169,4 +169,4 @@ class TestChunkFormerSTT:
 
         stt = ChunkFormerSTT()
         text = stt.transcribe(np.zeros(16000, dtype=np.float32))
-        assert text == "hello"
+        assert text == "Hello"

@@ -68,6 +68,8 @@ class SherpaSTT(BaseSTT):
             decoding_method="greedy_search",
             provider=provider,
         )
+        self._model_size = "zipformer-vi-30M-int8"
+        self._device = provider
         self._warmed_up = False
         log.info("Sherpa-ONNX loaded (30M params, int8).")
 
@@ -77,7 +79,7 @@ class SherpaSTT(BaseSTT):
         stream = self._recognizer.create_stream()
         stream.accept_waveform(16000, audio.astype(np.float32))
         self._recognizer.decode_stream(stream)
-        text = stream.result.text.strip()
+        text = stream.result.text.strip().capitalize()
 
         elapsed = time.perf_counter() - t0
         if not self._warmed_up:
