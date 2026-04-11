@@ -64,6 +64,7 @@ Models are hosted on `nrl-ai/edgevox-models` (HuggingFace) with fallback to upst
 
 ## Tooling
 
+- **uv** for package management. Use `uv pip install` / `uv venv` instead of bare `pip` / `python -m venv`. See https://docs.astral.sh/uv/.
 - **pre-commit** runs ruff (lint + format), gitleaks, and standard hygiene hooks. Install once with `pre-commit install`.
 - **gitleaks** scans for secrets on every commit. If a finding is a false positive, allowlist it in `.gitleaks.toml` with a comment explaining why — do not delete the finding.
 - **pytest** for tests (`pytest`, asyncio mode = auto). Tests live under `tests/`.

@@ -41,27 +41,30 @@ No cloud APIs. No internet after setup. Fully private. Powered by Gemma 4.
 ## Quick Start
 
 ```bash
-# 1. Create conda environment
-conda create -n voicebot python=3.12 -y
-conda activate voicebot
+# 1. Install uv (fast Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 2. Install llama-cpp-python with CUDA (prebuilt wheels)
-pip install llama-cpp-python \
+# 2. Create virtual environment
+uv venv --python 3.12
+source .venv/bin/activate
+
+# 3. Install llama-cpp-python with CUDA (prebuilt wheels)
+uv pip install llama-cpp-python \
     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
 
 # For Apple Silicon (Metal):
-# CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
+# CMAKE_ARGS="-DGGML_METAL=on" uv pip install llama-cpp-python
 
 # For CPU only:
-# pip install llama-cpp-python
+# uv pip install llama-cpp-python
 
-# 3. Install EdgeVox
-pip install -e .
+# 4. Install EdgeVox
+uv pip install -e .
 
-# 4. Download all models (~3GB total)
+# 5. Download all models (~3GB total)
 edgevox-setup
 
-# 5. Run!
+# 6. Run!
 edgevox
 ```
 
@@ -123,7 +126,7 @@ EdgeVox can publish voice pipeline events to ROS2 topics, making it easy to add 
 
 ```bash
 # Install with ROS2 support
-pip install -e ".[ros2]"
+uv pip install -e ".[ros2]"
 
 # Run with ROS2 bridge
 edgevox --ros2
