@@ -36,6 +36,7 @@ class WhisperSTT(BaseSTT):
     def __init__(self, model_size: str | None = None, device: str | None = None):
         from faster_whisper import WhisperModel
 
+        self._backend_name = "Whisper"
         if model_size and device:
             self._model_size = model_size
             self._device = device

@@ -30,8 +30,9 @@ class ChunkFormerSTT(BaseSTT):
 
         if device is None:
             device = "cuda" if has_cuda() else "cpu"
+        self._backend_name = "ChunkFormer"
         self._device = device
-        self._model_size = "chunkformer-ctc-large-vie"
+        self._model_size = "ctc-large-vie"
 
         log.info(f"Loading ChunkFormer-CTC-Large-Vie on {device}...")
         self._model = ChunkFormerModel.from_pretrained(self.MODEL_ID)

@@ -17,6 +17,24 @@ class TestBaseSTT:
 
 
 class TestCreateSTTFactory:
+    @pytest.fixture(autouse=True)
+    def _mock_sherpa_module(self):
+        """Pre-populate sys.modules for sherpa_onnx since it needs a native lib."""
+        import sys
+
+        mock_module = MagicMock()
+        needs_cleanup = "sherpa_onnx" not in sys.modules
+        if needs_cleanup:
+            sys.modules["sherpa_onnx"] = mock_module
+            sys.modules["sherpa_onnx.lib"] = MagicMock()
+            sys.modules["sherpa_onnx.lib._sherpa_onnx"] = MagicMock()
+        yield mock_module
+        if needs_cleanup:
+            sys.modules.pop("sherpa_onnx", None)
+            sys.modules.pop("sherpa_onnx.lib", None)
+            sys.modules.pop("sherpa_onnx.lib._sherpa_onnx", None)
+            sys.modules.pop("edgevox.stt.sherpa_stt", None)
+
     @patch("faster_whisper.WhisperModel")
     @patch("edgevox.core.gpu.get_nvidia_vram_gb", return_value=None)
     @patch("edgevox.core.gpu.get_ram_gb", return_value=16.0)
@@ -35,11 +53,13 @@ class TestCreateSTTFactory:
         stt = create_stt("fr")
         assert type(stt).__name__ == "WhisperSTT"
 
-    @patch("sherpa_onnx.OfflineRecognizer")
     @patch("edgevox.stt.sherpa_stt.hf_hub_download", return_value="/tmp/fake_model")
     @patch("edgevox.stt.sherpa_stt.snapshot_download", return_value="/tmp/fake_dir")
     @patch("edgevox.core.gpu.has_cuda", return_value=False)
-    def test_vi_uses_sherpa(self, _cuda, _snap, _hf, mock_recognizer):
+    def test_vi_uses_sherpa(self, _cuda, _snap, _hf, _mock_sherpa_module):
+        import sys
+
+        sys.modules.pop("edgevox.stt.sherpa_stt", None)
         from edgevox.stt import create_stt
 
         stt = create_stt("vi")
@@ -48,13 +68,21 @@ class TestCreateSTTFactory:
     @patch("faster_whisper.WhisperModel")
     @patch("edgevox.core.gpu.get_nvidia_vram_gb", return_value=None)
     @patch("edgevox.core.gpu.get_ram_gb", return_value=16.0)
-    @patch("sherpa_onnx.OfflineRecognizer.from_transducer", side_effect=RuntimeError("no model"))
-    @patch("edgevox.stt.sherpa_stt.hf_hub_download", side_effect=RuntimeError("no model"))
-    def test_vi_sherpa_fallback_to_whisper(self, _hf, _sherpa, _ram, _vram, mock_whisper):
+    def test_vi_sherpa_fallback_to_whisper(self, _ram, _vram, mock_whisper, _mock_sherpa_module):
+        import sys
+
+        # Make sherpa_onnx.OfflineRecognizer.from_transducer raise so SherpaSTT init fails
+        sherpa_mock = sys.modules["sherpa_onnx"]
+        sherpa_mock.OfflineRecognizer.from_transducer.side_effect = RuntimeError("no model")
+
+        sys.modules.pop("edgevox.stt.sherpa_stt", None)
         from edgevox.stt import create_stt
 
         stt = create_stt("vi")
         assert type(stt).__name__ == "WhisperSTT"
+
+        # Reset side_effect for other tests
+        sherpa_mock.OfflineRecognizer.from_transducer.side_effect = None
 
 
 class TestWhisperSTT:
@@ -102,18 +130,40 @@ class TestWhisperSTT:
 
 
 class TestSherpaSTT:
-    @patch("sherpa_onnx.OfflineRecognizer")
+    @pytest.fixture(autouse=True)
+    def _mock_sherpa_module(self):
+        """Pre-populate sys.modules for sherpa_onnx since it needs a native lib."""
+        import sys
+
+        mock_module = MagicMock()
+        needs_cleanup = "sherpa_onnx" not in sys.modules
+        if needs_cleanup:
+            sys.modules["sherpa_onnx"] = mock_module
+            sys.modules["sherpa_onnx.lib"] = MagicMock()
+            sys.modules["sherpa_onnx.lib._sherpa_onnx"] = MagicMock()
+        yield mock_module
+        if needs_cleanup:
+            sys.modules.pop("sherpa_onnx", None)
+            sys.modules.pop("sherpa_onnx.lib", None)
+            sys.modules.pop("sherpa_onnx.lib._sherpa_onnx", None)
+            sys.modules.pop("edgevox.stt.sherpa_stt", None)
+
     @patch("edgevox.stt.sherpa_stt.hf_hub_download", return_value="/tmp/fake")
     @patch("edgevox.core.gpu.has_cuda", return_value=False)
-    def test_transcribe(self, _cuda, _hf, mock_recognizer_cls):
-        from edgevox.stt.sherpa_stt import SherpaSTT
+    def test_transcribe(self, _cuda, _hf, _mock_sherpa_module):
+        import sys
 
         mock_recognizer = MagicMock()
-        mock_recognizer_cls.from_transducer.return_value = mock_recognizer
-
         mock_stream = MagicMock()
         mock_stream.result.text = " xin chào "
         mock_recognizer.create_stream.return_value = mock_stream
+
+        # Set up the mock so sherpa_onnx.OfflineRecognizer.from_transducer returns our mock
+        sherpa_mock = sys.modules["sherpa_onnx"]
+        sherpa_mock.OfflineRecognizer.from_transducer.return_value = mock_recognizer
+
+        sys.modules.pop("edgevox.stt.sherpa_stt", None)
+        from edgevox.stt.sherpa_stt import SherpaSTT
 
         stt = SherpaSTT()
         text = stt.transcribe(np.zeros(16000, dtype=np.float32))

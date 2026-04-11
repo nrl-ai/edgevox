@@ -91,6 +91,18 @@ def list_output_devices() -> list[tuple[str, int]]:
     return devices
 
 
+_TTS_DISPLAY_NAMES = {
+    "kokoro": "Kokoro-82M",
+    "piper": "Piper",
+    "supertonic": "Supertonic",
+    "pythaitts": "PyThaiTTS",
+}
+
+
+def _tts_display_name(backend: str) -> str:
+    return _TTS_DISPLAY_NAMES.get(backend, backend)
+
+
 def _get_default_output_device() -> int | None:
     """Get system default output device index."""
     try:
@@ -1389,10 +1401,10 @@ class EdgeVoxApp(App):
 
         # Update model info panel
         model_info = self.query_one("#model-info-panel", ModelInfoPanel)
-        tts_name = "Kokoro-82M" if cfg.tts_backend == "kokoro" else "Piper"
+        tts_name = _tts_display_name(cfg.tts_backend)
         self.call_from_thread(
             model_info.set_info,
-            self._stt._model_size,
+            self._stt.display_name,
             self._stt._device,
             "Gemma 4 E2B IT Q4_K_M",
             _get_gpu_info()["backend"],
@@ -1459,7 +1471,7 @@ class EdgeVoxApp(App):
     def _switch_model(self, model_size: str):
         """Hot-swap the Whisper STT model size."""
         chat = self.query_one("#chat-panel", RichLog)
-        valid = ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3", "chunkformer"]
+        valid = ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3", "sherpa", "chunkformer"]
         if model_size not in valid:
             self.call_from_thread(chat.write, Text(f"  Valid models: {', '.join(valid)}", style="italic yellow"))
             return
@@ -1469,10 +1481,10 @@ class EdgeVoxApp(App):
         elapsed = time.perf_counter() - t0
         model_info = self.query_one("#model-info-panel", ModelInfoPanel)
         cfg = get_lang(self._language)
-        tts_name = "Kokoro-82M" if cfg.tts_backend == "kokoro" else "Piper"
+        tts_name = _tts_display_name(cfg.tts_backend)
         self.call_from_thread(
             model_info.set_info,
-            self._stt._model_size,
+            self._stt.display_name,
             self._stt._device,
             "Gemma 4 E2B IT Q4_K_M",
             _get_gpu_info()["backend"],
@@ -1606,7 +1618,7 @@ class EdgeVoxApp(App):
             model_size=self._stt_model,
             device=self._stt_device,
         )
-        stt_name = self._stt._model_size
+        stt_name = self._stt.display_name
         stt_device = self._stt._device
         self.call_from_thread(
             chat.write,
@@ -1627,7 +1639,7 @@ class EdgeVoxApp(App):
         t_load = time.perf_counter()
         lang_cfg = get_lang(self._language)
         self._tts = create_tts(language=self._language, voice=self._voice, backend=self._tts_backend)
-        tts_name = "Kokoro-82M" if lang_cfg.tts_backend == "kokoro" else "Piper"
+        tts_name = _tts_display_name(lang_cfg.tts_backend)
         self._tts.synthesize(lang_cfg.test_phrase)
         self.call_from_thread(
             chat.write, Text(f"        TTS: {tts_name} {time.perf_counter() - t_load:.1f}s", style="#8b949e")

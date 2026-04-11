@@ -12,6 +12,16 @@ log = logging.getLogger(__name__)
 class BaseSTT:
     """Base STT interface. All backends implement this."""
 
+    _model_size: str = ""
+    _device: str = ""
+    _backend_name: str = ""
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable name for the model info panel."""
+        parts = [p for p in (self._backend_name, self._model_size) if p]
+        return " ".join(parts) if parts else type(self).__name__
+
     def transcribe(self, audio: np.ndarray, language: str = "en") -> str:
         raise NotImplementedError
 

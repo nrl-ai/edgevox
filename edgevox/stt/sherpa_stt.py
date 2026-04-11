@@ -6,6 +6,7 @@ Uses transducer (encoder + decoder + joiner) architecture.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import time
 from pathlib import Path
@@ -14,6 +15,33 @@ import numpy as np
 from huggingface_hub import hf_hub_download, snapshot_download
 
 from edgevox.stt import BaseSTT
+
+
+def _preload_onnxruntime():
+    """Ensure libonnxruntime.so is discoverable for sherpa-onnx.
+
+    sherpa-onnx links against the unversioned libonnxruntime.so, but the
+    onnxruntime pip package ships only a versioned .so (e.g. .so.1.23.2).
+    Create an unversioned symlink and add the directory to the search path.
+    """
+    try:
+        import onnxruntime as _ort
+
+        capi_dir = Path(_ort.__file__).parent / "capi"
+        unversioned = capi_dir / "libonnxruntime.so"
+        if not unversioned.exists():
+            versioned = sorted(capi_dir.glob("libonnxruntime.so.*"))
+            if versioned:
+                import os
+
+                os.symlink(versioned[0].name, str(unversioned))
+        if unversioned.exists():
+            ctypes.CDLL(str(unversioned), mode=ctypes.RTLD_GLOBAL)
+    except Exception:
+        pass
+
+
+_preload_onnxruntime()
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +96,7 @@ class SherpaSTT(BaseSTT):
             decoding_method="greedy_search",
             provider=provider,
         )
+        self._backend_name = "Sherpa"
         self._model_size = "zipformer-vi-30M-int8"
         self._device = provider
         self._warmed_up = False
