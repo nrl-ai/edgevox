@@ -1,0 +1,28 @@
+# Gitleaks config — extends the default ruleset.
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Project-wide allowlist"
+
+paths = [
+  '''(^|/)\.gitleaks\.toml$''',
+  '''(^|/)pyproject\.toml$''',
+  '''(^|/)poetry\.lock$''',
+  '''(^|/)uv\.lock$''',
+  '''(^|/)package-lock\.json$''',
+  '''(^|/)pnpm-lock\.yaml$''',
+  '''(^|/)website/node_modules/''',
+  '''(^|/)docs/''',
+  '''\.(gguf|onnx|bin|pt|pth|safetensors|ckpt)$''',
+  '''\.(wav|mp3|flac|ogg)$''',
+]
+
+# Hugging Face model IDs and example placeholders are not secrets.
+regexes = [
+  '''huggingface\.co/[\w./-]+''',
+  '''hf_[A-Za-z0-9]{0,8}\.\.\.''',
+  '''(?i)(example|placeholder|dummy|fake|test)[_-]?(token|key|secret|password)''',
+]

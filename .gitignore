@@ -1,0 +1,101 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+.installed.cfg
+MANIFEST
+
+# ---- Virtual environments ----
+.env
+.envrc
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ---- Testing / coverage ----
+.pytest_cache/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+
+# ---- Models & weights (large binaries) ----
+models/
+*.gguf
+*.onnx
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+
+# ---- Audio / recordings ----
+*.wav
+*.mp3
+*.flac
+*.ogg
+recordings/
+audio_dumps/
+
+# ---- IDE / editors ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.spyderproject
+.spyproject
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Logs / temp ----
+*.log
+logs/
+tmp/
+temp/
+
+# ---- VitePress / website ----
+website/node_modules/
+website/docs/.vitepress/dist/
+website/docs/.vitepress/cache/
+
+# ---- Web UI source (Vite/React) ----
+# The built SPA is committed under edgevox/server/static/ — do NOT ignore it.
+webui/node_modules/
+webui/dist/
+
+# ---- Local scratch / test artifacts ----
+layout_preview.*
+test_layout.py
+scratch/
+.scratch/
+
+# ---- Secrets ----
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
