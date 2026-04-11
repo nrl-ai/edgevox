@@ -26,7 +26,7 @@ _LANG_MAP = {
     "a": "en-us",
     "b": "en-gb",
     "e": "es",
-    "f": "fr",
+    "f": "fr-fr",
     "h": "hi",
     "i": "it",
     "j": "ja",

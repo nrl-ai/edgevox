@@ -193,7 +193,7 @@ _reg(
         name="Thai",
         tts_backend="pythaitts",
         default_voice="th-default",
-        test_phrase="สวัสดี.",
+        test_phrase="สวัสดีครับ",
     )
 )
 

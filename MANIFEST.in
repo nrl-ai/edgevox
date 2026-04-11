@@ -1,0 +1,14 @@
+include LICENSE README.md pyproject.toml
+recursive-include edgevox *.py py.typed
+recursive-include edgevox/server/static *
+
+prune website
+prune webui
+prune docs
+prune scripts
+prune tests
+prune voices
+prune .github
+
+exclude .gitignore .gitleaks.toml .pre-commit-config.yaml CLAUDE.md .env
+global-exclude __pycache__ *.py[cod] *.egg-info
