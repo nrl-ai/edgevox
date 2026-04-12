@@ -137,6 +137,37 @@ Typical latency on RTX 3080:
 | TTS (first sentence) | ~0.08s | Kokoro-82M |
 | **TTFS** | **~0.81s** | Time to first speech |
 
+## Audio Playback
+
+EdgeVox uses a **callback-based** PortAudio output stream backed by a numpy buffer. The audio thread is fed continuously by a lock-protected ring; on every callback it copies up to `frames` samples into the device's `outdata` buffer and pads with silence on underrun.
+
+```mermaid
+flowchart LR
+    subgraph MainThread["main thread"]
+        PLAY["play(audio)"]
+        ENQ[enqueue into _play_buf]
+        WAIT[poll until drained]
+        PLAY --> ENQ --> WAIT
+    end
+
+    subgraph AudioThread["PortAudio audio thread"]
+        CB["_callback(outdata, frames)"]
+        DRAIN[drain _play_buf -> outdata]
+        PAD[pad silence on underrun]
+        REF[push to AEC ref ring]
+        CB --> DRAIN --> PAD --> REF
+    end
+
+    ENQ -. _buf_lock .- DRAIN
+    REF -. _RefBuffer .-> RECORDER[AudioRecorder]
+```
+
+Why callback instead of `stream.write()`:
+
+- **No ALSA underruns.** A blocking `stream.write()` loop intermittently failed with `alsa_snd_pcm_mmap_begin` / `PaAlsaStream_SetUpBuffers` whenever streaming TTS couldn't deliver chunks fast enough. With a callback the device never starves — silence is emitted instead.
+- **Lock-free interrupts.** `interrupt()` flushes the queued buffer instead of aborting the stream, eliminating the abort/restart race that crashed PortAudio under load.
+- **AEC reference is captured on the audio thread.** The played samples are downsampled to 16 kHz mono and pushed into a chunked numpy ring (`_RefBuffer`) — O(1) per push, no Python-level per-sample iteration in the audio callback.
+
 ## Threading Model
 
 ```mermaid

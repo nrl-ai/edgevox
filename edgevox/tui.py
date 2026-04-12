@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import json
 import logging
+import queue
 import re
 import threading
 import time
@@ -41,18 +42,43 @@ from textual.timer import Timer
 from textual.widgets import Footer, Header, Input, Label, OptionList, RichLog, Rule, Select, Static
 from textual.widgets.option_list import Option
 
+from edgevox.audio import AEC_CHOICES, AudioRecorder, play_audio, player
 from edgevox.audio import TARGET_SAMPLE_RATE as MIC_SAMPLE_RATE
-from edgevox.audio import AudioRecorder, play_audio, player
 from edgevox.audio.wakeword import WakeWordDetector
 from edgevox.cli.main import TextBot, VoiceBot
 from edgevox.core.config import LANGUAGES, get_lang, needs_stt_reload
 from edgevox.core.config import lang_options as get_lang_options
-from edgevox.core.pipeline import stream_sentences
+from edgevox.core.frames import (
+    AudioFrame,
+    InterruptFrame,
+    MetricsFrame,
+    Pipeline,
+    SentenceFrame,
+    TextFrame,
+    TranscriptionFrame,
+)
+from edgevox.core.gpu import (
+    get_nvidia_gpu_name,
+    get_nvidia_used_mb,
+    get_nvidia_vram_gb,
+    get_ram_gb,
+    has_cuda,
+    has_metal,
+)
+from edgevox.core.processors import (
+    LLMProcessor,
+    PlaybackProcessor,
+    SentenceSplitter,
+    STTProcessor,
+    TTSProcessor,
+)
+from edgevox.integrations.ros2_bridge import NullBridge, create_bridge
 from edgevox.llm import LLM
 from edgevox.server.core import ServerCore
 from edgevox.server.main import create_app
 from edgevox.stt import STT, create_stt
-from edgevox.tts import BaseTTS, create_tts
+from edgevox.tts import BaseTTS, create_tts, get_piper_voices
+from edgevox.tts.supertonic import SUPERTONIC_VOICES
 
 log = logging.getLogger(__name__)
 
@@ -237,8 +263,6 @@ def _resolve_saved_device(saved_idx: int | None, available: list[tuple[str, int]
 
 def _get_gpu_info() -> dict:
     """Get GPU memory info if available."""
-    from edgevox.core.gpu import get_nvidia_gpu_name, get_nvidia_used_mb, get_nvidia_vram_gb, has_metal
-
     vram_gb = get_nvidia_vram_gb()
     if vram_gb is not None:
         used_mb = get_nvidia_used_mb() or 0
@@ -255,8 +279,6 @@ def _get_gpu_info() -> dict:
 
 def _get_ram_info() -> tuple[float, float]:
     """Return (used_gb, total_gb)."""
-    from edgevox.core.gpu import get_ram_gb
-
     try:
         import psutil
 
@@ -751,12 +773,8 @@ def voice_options(language: str) -> list[tuple[str, str]]:
         others = [v for v in kokoro_voices if not v.startswith(prefix)]
         return [(v, v) for v in matching] + [(v, v) for v in others]
     elif cfg.tts_backend == "supertonic":
-        from edgevox.tts.supertonic import SUPERTONIC_VOICES
-
         return [(f"{name} — {desc}", name) for name, desc in SUPERTONIC_VOICES.items()]
     else:
-        from edgevox.tts import get_piper_voices
-
         prefix = cfg.code + "-"
         matching = [v for v in get_piper_voices() if v.startswith(prefix)]
         others = [v for v in get_piper_voices() if not v.startswith(prefix)]
@@ -845,6 +863,7 @@ class EdgeVoxApp(App):
         session_timeout: float = 30.0,
         ros2: bool = False,
         ros2_namespace: str = "/edgevox",
+        aec_backend: str = "none",
     ):
         super().__init__()
         self._stt_model = stt_model
@@ -857,6 +876,7 @@ class EdgeVoxApp(App):
         self._session_timeout = session_timeout
         self._ros2_enabled = ros2
         self._ros2_namespace = ros2_namespace
+        self._aec_backend = aec_backend
 
         # Restore saved device prefs if not explicitly provided
         saved = _load_device_prefs()
@@ -1143,179 +1163,161 @@ class EdgeVoxApp(App):
             ),
         )
 
-        # LLM stream -> overlapped TTS
+        # Skip STT — feed text directly as a TranscriptionFrame into the pipeline
         self.call_from_thread(setattr, status, "state", BotState.THINKING)
         self.call_from_thread(chat.write, Text("  \u2026 thinking", style="dim italic #c084fc"))
-        result = self._stream_and_speak(self._llm.chat_stream(text), chat, status, t_start)
+        input_frames = [TranscriptionFrame(text=text)]
+        result = self._run_pipeline(input_frames, chat, status, t_start)
 
         t_total = time.perf_counter() - t_start
         t_llm = t_total - result["tts_total"]
 
-        ts = datetime.now().strftime("%H:%M:%S")
         full_reply = " ".join(result["parts"])
-        self._chat_log.append((ts, "Bot", full_reply))
+        if full_reply:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self._chat_log.append((ts, "Bot", full_reply))
+            self.call_from_thread(
+                chat.write,
+                Text(f"   TTFS {result['ttfs']:.2f}s | Total {t_total:.2f}s", style="dim"),
+            )
+            self.call_from_thread(
+                metrics_panel.update_metrics,
+                0.0,
+                t_llm,
+                result["tts_total"],
+                result["ttfs"],
+                t_total,
+            )
 
-        self.call_from_thread(
-            chat.write,
-            Text(f"   TTFS {result['ttfs']:.2f}s | Total {t_total:.2f}s", style="dim"),
-        )
-        self.call_from_thread(
-            metrics_panel.update_metrics,
-            0.0,
-            t_llm,
-            result["tts_total"],
-            result["ttfs"],
-            t_total,
-        )
         self.call_from_thread(setattr, status, "state", BotState.LISTENING)
         with contextlib.suppress(Exception):
             self.call_from_thread(self.query_one("#cmd-input", Input).focus)
 
-    def _stream_and_speak(self, token_stream, chat, status, t_start: float) -> dict:
-        """Stream LLM tokens → split sentences → overlapped TTS → play.
+    def _run_pipeline(self, input_frames, chat, status, t_start: float) -> dict:
+        """Run frames through the extensible pipeline and handle UI updates.
 
-        Synthesizes the next sentence in a background thread while the current
-        one plays, eliminating the gap between sentences.
+        The pipeline is: STT -> LLM -> SentenceSplitter -> TTS -> Playback.
+        The pipeline runs in a background thread; the main loop polls frames
+        from a queue with a short timeout so interrupt signals can break out
+        immediately even if the pipeline is blocked in a C call.
 
-        Returns dict with: parts, tts_total, ttfs, interrupted.
+        Returns dict with: parts, tts_total, ttfs, interrupted, metrics.
         """
-        from concurrent.futures import ThreadPoolExecutor
-
-        # Wrap token stream to publish each token to ROS2
-        def _token_tap(stream):
-            for token in stream:
-                if self._bridge:
-                    self._bridge.publish_bot_token(token)
-                yield token
-
-        sentence_stream = stream_sentences(_token_tap(token_stream))
-        tts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
+        # Build the pipeline
+        processors = [
+            STTProcessor(self._stt, language=self._language),
+            LLMProcessor(self._llm),
+            SentenceSplitter(),
+            TTSProcessor(self._tts),
+            PlaybackProcessor(),
+        ]
+        self._pipeline = Pipeline(processors)
 
         full_reply_parts = []
         t_tts_total = 0.0
         t_first_speech = None
         first_sentence = True
         interrupted = False
+        all_metrics: dict = {}
 
-        def _synth(s):
-            t = time.perf_counter()
-            a = self._tts.synthesize(s)
-            return a, time.perf_counter() - t
+        # Run the pipeline in a daemon thread and poll its output via a queue.
+        # This isolates the UI loop from blocking processor calls so the
+        # interrupt signal can break us out promptly.
+        frame_q: queue.Queue = queue.Queue()
+        _SENTINEL = object()
 
-        def _show(s):
-            nonlocal first_sentence
-            if first_sentence:
+        def _pipeline_worker():
+            try:
+                for frame in self._pipeline.run(input_frames):
+                    frame_q.put(frame)
+                    if isinstance(frame, InterruptFrame):
+                        break
+            except Exception:
+                log.exception("Pipeline worker error")
+            finally:
+                frame_q.put(_SENTINEL)
+
+        worker = threading.Thread(target=_pipeline_worker, daemon=True)
+        worker.start()
+
+        while True:
+            if self._interrupted.is_set():
+                interrupted = True
+                break
+            try:
+                frame = frame_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            if frame is _SENTINEL:
+                break
+
+            if isinstance(frame, InterruptFrame):
+                interrupted = True
+                break
+
+            elif isinstance(frame, TranscriptionFrame):
+                ts = datetime.now().strftime("%H:%M:%S")
+                self._chat_log.append((ts, "You", frame.text))
                 self.call_from_thread(
                     chat.write,
                     Text.assemble(
-                        (" \u25c0 Bot ", "bold #00e5ff"),
-                        (f"\n   {s}", "#c9d1d9"),
+                        ("\u2500" * 60 + "\n", "#1e3a2e"),
+                        (" \u25b6 You ", "bold #00ff88"),
+                        (f"{ts}", "dim"),
+                        (f"  {frame.audio_duration:.1f}s speech \u2192 STT {frame.stt_time:.2f}s\n", "#1e3a2e"),
+                        (f"   {frame.text}\n", "#c9d1d9"),
                     ),
                 )
-                first_sentence = False
-            else:
-                self.call_from_thread(chat.write, Text(f"   {s}", style="#c9d1d9"))
-            if self._bridge:
-                self._bridge.publish_bot_sentence(s)
+                if self._bridge:
+                    self._bridge.publish_transcription(frame.text)
+                self.call_from_thread(setattr, status, "state", BotState.THINKING)
+                if self._bridge:
+                    self._bridge.publish_state("thinking")
+                self.call_from_thread(chat.write, Text("  \u2026 thinking", style="dim italic #c084fc"))
 
-        # Collect sentences into a buffer so we can look ahead
-        sentence_buf = []
-        future = None
+            elif isinstance(frame, TextFrame):
+                if self._bridge:
+                    self._bridge.publish_bot_token(frame.text)
 
-        for sentence in sentence_stream:
-            if self._interrupted.is_set():
-                interrupted = True
-                break
-            sentence_buf.append(sentence)
-
-            # Start synthesizing current sentence
-            full_reply_parts.append(sentence)
-            self.call_from_thread(setattr, status, "state", BotState.SPEAKING)
-            _show(sentence)
-
-            if self._interrupted.is_set():
-                interrupted = True
-                break
-
-            # Use pre-synthesized audio if available, else synth now
-            if future is not None:
-                audio_out, t_elapsed = future.result()
-                future = None
-            else:
-                audio_out, t_elapsed = _synth(sentence)
-            t_tts_total += t_elapsed
-
-            if t_first_speech is None:
-                t_first_speech = time.perf_counter() - t_start
-
-            if self._interrupted.is_set():
-                interrupted = True
-                break
-
-            # Peek ahead: try to get the next sentence and start synthesizing it
-            # while we play the current audio
-            next_sent = None
-            try:
-                next_sent = next(sentence_stream)
-                if not self._interrupted.is_set():
-                    future = tts_executor.submit(_synth, next_sent)
-            except StopIteration:
-                pass
-
-            # Play current (next is synthesizing in background)
-            completed = play_audio(audio_out, sample_rate=self._tts.sample_rate)
-            if not completed or self._interrupted.is_set():
-                interrupted = True
-                if future:
-                    future.cancel()
-                    future = None
-                break
-
-            # If we peeked a next sentence, process it on next iteration
-            # by pushing it back (we re-inject it into the loop)
-            if next_sent is not None:
-                if self._interrupted.is_set():
-                    interrupted = True
-                    break
-
-                full_reply_parts.append(next_sent)
-                _show(next_sent)
-
-                if self._interrupted.is_set():
-                    interrupted = True
-                    break
-
-                if future is not None:
-                    audio_out, t_elapsed = future.result()
-                    future = None
+            elif isinstance(frame, SentenceFrame):
+                full_reply_parts.append(frame.text)
+                self.call_from_thread(setattr, status, "state", BotState.SPEAKING)
+                if first_sentence:
+                    self.call_from_thread(
+                        chat.write,
+                        Text.assemble(
+                            (" \u25c0 Bot ", "bold #00e5ff"),
+                            (f"\n   {frame.text}", "#c9d1d9"),
+                        ),
+                    )
+                    first_sentence = False
                 else:
-                    audio_out, t_elapsed = _synth(next_sent)
-                t_tts_total += t_elapsed
+                    self.call_from_thread(chat.write, Text(f"   {frame.text}", style="#c9d1d9"))
+                if self._bridge:
+                    self._bridge.publish_bot_sentence(frame.text)
 
-                if t_first_speech is None:
+            elif isinstance(frame, MetricsFrame):
+                all_metrics.update(frame.metrics)
+                if "ttft" in frame.metrics and t_first_speech is None:
                     t_first_speech = time.perf_counter() - t_start
+                if "tts_sentence" in frame.metrics:
+                    t_tts_total += frame.metrics["tts_sentence"]
 
-                if self._interrupted.is_set():
-                    interrupted = True
-                    break
-
-                completed = play_audio(audio_out, sample_rate=self._tts.sample_rate)
-                if not completed or self._interrupted.is_set():
-                    interrupted = True
-                    break
-
-        tts_executor.shutdown(wait=False)
-
-        # Drain remaining LLM tokens to keep history consistent
         if interrupted:
-            for _ in sentence_stream:
-                pass
+            # Signal pipeline to stop; don't wait for worker to finish.
+            self._pipeline.interrupt()
+            self.call_from_thread(chat.write, Text("   \u26a1 interrupted", style="italic #ffb020"))
+            self.call_from_thread(setattr, status, "state", BotState.INTERRUPTED)
+
+        self._pipeline = None
 
         return {
             "parts": full_reply_parts,
             "tts_total": t_tts_total,
             "ttfs": t_first_speech or 0.0,
             "interrupted": interrupted,
+            "metrics": all_metrics,
         }
 
     def action_focus_command(self) -> None:
@@ -1358,6 +1360,8 @@ class EdgeVoxApp(App):
                 on_interrupt=self._on_interrupt,
                 on_level=self._on_level,
                 device=device_idx,
+                aec_backend=self._aec_backend,
+                player_ref=player,
             )
             player.link_recorder(self._recorder)
             self._recorder.start()
@@ -1547,16 +1551,12 @@ class EdgeVoxApp(App):
             if others:
                 parts += [("  Other: ", "dim"), (", ".join(others) + "\n", "dim")]
         elif cfg.tts_backend == "supertonic":
-            from edgevox.tts.supertonic import SUPERTONIC_VOICES
-
             for name, desc in SUPERTONIC_VOICES.items():
                 marker = " *" if name == cfg.default_voice else ""
                 parts += [("  ", ""), (name, "bold cyan"), (f"  {desc}{marker}\n", "yellow" if marker else "dim")]
         elif cfg.tts_backend == "pythaitts":
             parts += [("  ", ""), ("th-default", "bold cyan"), (" *\n", "yellow")]
         else:
-            from edgevox.tts import get_piper_voices
-
             prefix = cfg.code + "-"
             matching = [v for v in get_piper_voices() if v.startswith(prefix)]
             others = [v for v in get_piper_voices() if not v.startswith(prefix)]
@@ -1611,8 +1611,6 @@ class EdgeVoxApp(App):
         # ROS2 bridge
         if self._ros2_enabled:
             self.call_from_thread(chat.write, Text("  Initializing ROS2 bridge...", style="dim"))
-            from edgevox.integrations.ros2_bridge import NullBridge, create_bridge
-
             self._bridge = create_bridge(enabled=True, namespace=self._ros2_namespace)
             if not isinstance(self._bridge, NullBridge):
                 self._bridge.set_tts_callback(self._on_ros2_tts)
@@ -1704,6 +1702,8 @@ class EdgeVoxApp(App):
             on_level=self._on_level,
             on_audio_frame=self._on_audio_frame if self._wakeword else None,
             device=self._mic_device,
+            aec_backend=self._aec_backend,
+            player_ref=player,
         )
         player.link_recorder(self._recorder)
         self._recorder.start()
@@ -1773,14 +1773,10 @@ class EdgeVoxApp(App):
                 others = [v for v in all_kokoro if not v.startswith(prefix)]
                 voices = matching + others
             elif cfg.tts_backend == "supertonic":
-                from edgevox.tts.supertonic import SUPERTONIC_VOICES
-
                 voices = list(SUPERTONIC_VOICES.keys())
             elif cfg.tts_backend == "pythaitts":
                 voices = ["th-default"]
             else:
-                from edgevox.tts import get_piper_voices
-
                 prefix = cfg.code + "-"
                 matching = [v for v in get_piper_voices() if v.startswith(prefix)]
                 others = [v for v in get_piper_voices() if not v.startswith(prefix)]
@@ -1792,8 +1788,6 @@ class EdgeVoxApp(App):
             }
 
         elif query == "list_languages":
-            from edgevox.core.config import LANGUAGES
-
             langs = {}
             for code, cfg in sorted(LANGUAGES.items(), key=lambda x: x[1].name):
                 langs[code] = {
@@ -1804,15 +1798,6 @@ class EdgeVoxApp(App):
             return {"current": self._language, "languages": langs}
 
         elif query == "hardware_info":
-            from edgevox.core.gpu import (
-                get_nvidia_gpu_name,
-                get_nvidia_used_mb,
-                get_nvidia_vram_gb,
-                get_ram_gb,
-                has_cuda,
-                has_metal,
-            )
-
             return {
                 "cuda": has_cuda(),
                 "metal": has_metal(),
@@ -1929,12 +1914,16 @@ class EdgeVoxApp(App):
             pass
 
     def _on_interrupt(self):
+        """Signal interrupt — must be fast and non-blocking.
+
+        Runs on the process_loop thread.  Sets the pipeline interrupt flag
+        and stops playback.  UI updates happen in _run_pipeline when it
+        sees the InterruptFrame.
+        """
         self._interrupted.set()
+        if hasattr(self, "_pipeline") and self._pipeline is not None:
+            self._pipeline.interrupt()
         player.interrupt()
-        chat = self.query_one("#chat-panel", RichLog)
-        self.call_from_thread(chat.write, Text("   \u26a1 interrupted", style="italic #ffb020"))
-        status = self.query_one("#status-bar", StatusBar)
-        self.call_from_thread(setattr, status, "state", BotState.INTERRUPTED)
         if self._bridge:
             self._bridge.publish_state("interrupted")
 
@@ -1974,85 +1963,52 @@ class EdgeVoxApp(App):
         metrics_panel = self.query_one("#metrics-box", MetricsPanel)
 
         self._interrupted.clear()
-        duration = len(audio) / MIC_SAMPLE_RATE
         t_start = time.perf_counter()
 
-        # STT
         self.call_from_thread(setattr, status, "state", BotState.TRANSCRIBING)
         if self._bridge:
             self._bridge.publish_state("transcribing")
-        t0 = time.perf_counter()
-        text = self._stt.transcribe(audio, language=self._language)
-        t_stt = time.perf_counter() - t0
 
-        if not text or text.isspace():
-            self.call_from_thread(setattr, status, "state", BotState.LISTENING)
-            if self._bridge:
-                self._bridge.publish_state("listening")
-            return
+        input_frames = [AudioFrame(audio=audio, sample_rate=MIC_SAMPLE_RATE)]
+        result = self._run_pipeline(input_frames, chat, status, t_start)
 
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._chat_log.append((ts, "You", text))
-        # User message — green accent with speech stats
-        self.call_from_thread(
-            chat.write,
-            Text.assemble(
-                ("\u2500" * 60 + "\n", "#1e3a2e"),
-                (" \u25b6 You ", "bold #00ff88"),
-                (f"{ts}", "dim"),
-                (f"  {duration:.1f}s speech \u2192 STT {t_stt:.2f}s\n", "#1e3a2e"),
-                (f"   {text}\n", "#c9d1d9"),
-            ),
-        )
-        if self._bridge:
-            self._bridge.publish_transcription(text)
-
-        # LLM stream -> overlapped sentence TTS
-        self.call_from_thread(setattr, status, "state", BotState.THINKING)
-        if self._bridge:
-            self._bridge.publish_state("thinking")
-        self.call_from_thread(chat.write, Text("  \u2026 thinking", style="dim italic #c084fc"))
-
-        result = self._stream_and_speak(self._llm.chat_stream(text), chat, status, t_start)
-        t_tts_total = result["tts_total"]
-        t_first_speech = result["ttfs"]
-        full_reply_parts = result["parts"]
+        stt_time = result["metrics"].get("stt", 0)
 
         t_total = time.perf_counter() - t_start
-        t_llm = t_total - t_stt - t_tts_total
+        t_tts_total = result["tts_total"]
+        t_llm = t_total - stt_time - t_tts_total
 
-        full_reply = " ".join(full_reply_parts)
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._chat_log.append((ts, "Bot", full_reply))
-        if self._bridge:
-            self._bridge.publish_response(full_reply)
-            self._bridge.publish_metrics(
-                {
-                    "stt": round(t_stt, 3),
-                    "llm": round(t_llm, 3),
-                    "tts": round(t_tts_total, 3),
-                    "ttfs": round(t_first_speech or 0, 3),
-                    "total": round(t_total, 3),
-                }
+        full_reply = " ".join(result["parts"])
+        if full_reply:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self._chat_log.append((ts, "Bot", full_reply))
+            if self._bridge:
+                self._bridge.publish_response(full_reply)
+                self._bridge.publish_metrics(
+                    {
+                        "stt": round(stt_time, 3),
+                        "llm": round(t_llm, 3),
+                        "tts": round(t_tts_total, 3),
+                        "ttfs": round(result["ttfs"], 3),
+                        "total": round(t_total, 3),
+                    }
+                )
+            self.call_from_thread(
+                chat.write,
+                Text(f"   TTFS {result['ttfs']:.2f}s | Total {t_total:.2f}s", style="dim"),
+            )
+            self.call_from_thread(
+                metrics_panel.update_metrics,
+                stt_time,
+                t_llm,
+                t_tts_total,
+                result["ttfs"],
+                t_total,
             )
 
-        # Latency summary after bot response
-        self.call_from_thread(
-            chat.write,
-            Text(f"   TTFS {t_first_speech or 0:.2f}s | Total {t_total:.2f}s", style="dim"),
-        )
-        self.call_from_thread(
-            metrics_panel.update_metrics,
-            t_stt,
-            t_llm,
-            t_tts_total,
-            t_first_speech or 0,
-            t_total,
-        )
         self.call_from_thread(setattr, status, "state", BotState.LISTENING)
         if self._bridge:
             self._bridge.publish_state("listening")
-        # Auto-focus input for quick follow-up
         with contextlib.suppress(Exception):
             self.call_from_thread(self.query_one("#cmd-input", Input).focus)
 
@@ -2173,6 +2129,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--text-mode", action="store_true", help="Text-only mode, no mic (simple-ui only)")
 
+    # AEC (echo cancellation for voice interrupt)
+    parser.add_argument(
+        "--aec",
+        type=str,
+        default="none",
+        choices=AEC_CHOICES,
+        help="Echo cancellation backend for voice interrupt: none, nlms, speex (default: none)",
+    )
+
     # Web UI options
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Web UI bind host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8765, help="Web UI bind port (default: 8765)")
@@ -2214,6 +2179,7 @@ def _run_tui(args: argparse.Namespace) -> None:
         session_timeout=args.session_timeout,
         ros2=args.ros2,
         ros2_namespace=args.ros2_namespace,
+        aec_backend=args.aec,
     )
     app.run()
 
@@ -2234,6 +2200,7 @@ def _run_simple_ui(args: argparse.Namespace) -> None:
             tts_backend=args.tts,
             voice=args.voice,
             language=args.language,
+            aec_backend=args.aec,
         )
     bot.run()
 

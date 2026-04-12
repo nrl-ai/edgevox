@@ -18,8 +18,23 @@ import time
 
 import numpy as np
 
+from edgevox.audio import AEC_CHOICES, AudioRecorder, play_audio, player
 from edgevox.audio import TARGET_SAMPLE_RATE as MIC_SAMPLE_RATE
-from edgevox.audio import AudioRecorder, play_audio
+from edgevox.core.frames import (
+    AudioFrame,
+    InterruptFrame,
+    MetricsFrame,
+    Pipeline,
+    SentenceFrame,
+    TranscriptionFrame,
+)
+from edgevox.core.processors import (
+    LLMProcessor,
+    PlaybackProcessor,
+    SentenceSplitter,
+    STTProcessor,
+    TTSProcessor,
+)
 from edgevox.llm import LLM
 from edgevox.stt import create_stt
 from edgevox.tts import create_tts
@@ -28,7 +43,14 @@ log = logging.getLogger(__name__)
 
 
 class VoiceBot:
-    """Wires STT → LLM → TTS into a conversational loop."""
+    """Wires STT → LLM → TTS through the frame-based Pipeline.
+
+    Supports:
+    - Echo suppression (mic paused during playback via player.link_recorder)
+    - Voice interrupt (user can speak over the bot to stop it)
+    - Acoustic echo cancellation (via --aec nlms/specsub/dtln)
+    - Streaming TTS output
+    """
 
     def __init__(
         self,
@@ -38,6 +60,7 @@ class VoiceBot:
         tts_backend: str | None = None,
         voice: str | None = None,
         language: str = "en",
+        aec_backend: str = "none",
     ):
         print("Loading models... (this may take a minute on first run)")
 
@@ -49,7 +72,10 @@ class VoiceBot:
         print(f"All models loaded in {elapsed:.1f}s")
 
         self._language = language
+        self._aec_backend = aec_backend
         self._processing = threading.Lock()
+        self._interrupted = threading.Event()
+        self._pipeline: Pipeline | None = None
         self._recorder: AudioRecorder | None = None
 
     def _on_speech(self, audio: np.ndarray):
@@ -59,47 +85,65 @@ class VoiceBot:
             return
 
         try:
+            self._interrupted.clear()
             duration = len(audio) / MIC_SAMPLE_RATE
             print(f"\n🎤 Heard {duration:.1f}s of speech, processing...")
 
-            # 1. Speech-to-Text
-            t0 = time.perf_counter()
-            text = self._stt.transcribe(audio, language=self._language)
-            stt_time = time.perf_counter() - t0
+            # Build a fresh pipeline per turn
+            self._pipeline = Pipeline(
+                [
+                    STTProcessor(self._stt, language=self._language),
+                    LLMProcessor(self._llm),
+                    SentenceSplitter(),
+                    TTSProcessor(self._tts),
+                    PlaybackProcessor(),
+                ]
+            )
 
-            if not text or text.isspace():
-                print("  (no speech detected)")
-                return
+            full_reply_parts: list[str] = []
+            metrics: dict = {}
+            t_start = time.perf_counter()
 
-            print(f'  📝 You said: "{text}" ({stt_time:.2f}s)')
+            input_frames = [AudioFrame(audio=audio, sample_rate=MIC_SAMPLE_RATE)]
+            for frame in self._pipeline.run(input_frames):
+                if isinstance(frame, InterruptFrame):
+                    print("  ⚡ interrupted")
+                    break
+                elif isinstance(frame, TranscriptionFrame):
+                    print(f'  📝 You said: "{frame.text}" ({frame.stt_time:.2f}s)')
+                elif isinstance(frame, SentenceFrame):
+                    full_reply_parts.append(frame.text)
+                    print(f"  🤖 {frame.text}")
+                elif isinstance(frame, MetricsFrame):
+                    metrics.update(frame.metrics)
 
-            # 2. LLM response
-            t1 = time.perf_counter()
-            reply = self._llm.chat(text)
-            llm_time = time.perf_counter() - t1
-            print(f'  🤖 Reply: "{reply}" ({llm_time:.2f}s)')
-
-            # 3. Text-to-Speech
-            t2 = time.perf_counter()
-            audio_out = self._tts.synthesize(reply)
-            tts_time = time.perf_counter() - t2
-
-            total = time.perf_counter() - t0
-            print(f"  ⏱️  Latency: STT={stt_time:.2f}s LLM={llm_time:.2f}s TTS={tts_time:.2f}s Total={total:.2f}s")
-
-            # 4. Play audio
-            play_audio(audio_out, sample_rate=self._tts.sample_rate)
+            total = time.perf_counter() - t_start
+            stt_t = metrics.get("stt", 0)
+            ttft = metrics.get("ttft", 0)
+            tts_t = metrics.get("tts_sentence", 0)
+            print(f"  ⏱️  STT={stt_t:.2f}s TTFT={ttft:.2f}s TTS={tts_t:.2f}s Total={total:.2f}s")
 
         except Exception:
             log.exception("Error in voice pipeline")
         finally:
+            self._pipeline = None
+            if self._recorder:
+                self._recorder.force_resume()
             self._processing.release()
+
+    def _on_interrupt(self):
+        """Signal interrupt — called from the recorder thread when user speaks over bot."""
+        self._interrupted.set()
+        if self._pipeline is not None:
+            self._pipeline.interrupt()
+        player.interrupt()
 
     def run(self):
         """Start the voice bot. Blocks until Ctrl+C."""
         print("\n" + "=" * 60)
-        print("  VOXPILOT — Local Voice AI")
+        print("  EdgeVox — Local Voice AI")
         print("  Speak naturally — I'll respond when you pause.")
+        print(f"  Echo cancellation: {self._aec_backend}")
         print("  Press Ctrl+C to quit.")
         print("=" * 60 + "\n")
 
@@ -108,7 +152,13 @@ class VoiceBot:
         _ = self._tts.synthesize("Ready.")
         print("Ready! Start speaking.\n")
 
-        self._recorder = AudioRecorder(on_speech=self._on_speech)
+        self._recorder = AudioRecorder(
+            on_speech=self._on_speech,
+            on_interrupt=self._on_interrupt,
+            aec_backend=self._aec_backend,
+            player_ref=player,
+        )
+        player.link_recorder(self._recorder)
         self._recorder.start()
 
         stop_event = threading.Event()
@@ -191,6 +241,14 @@ def main():
     parser.add_argument("--text-mode", action="store_true", help="Text-only mode (no microphone needed)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
 
+    parser.add_argument(
+        "--aec",
+        type=str,
+        default="none",
+        choices=AEC_CHOICES,
+        help="Echo cancellation backend for voice interrupt: none, nlms, specsub, dtln (default: none)",
+    )
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -208,6 +266,7 @@ def main():
             tts_backend=args.tts,
             voice=args.voice,
             language=args.language,
+            aec_backend=args.aec,
         )
     bot.run()
 

@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from edgevox.audio.aec import NoAEC, create_aec
+
 if TYPE_CHECKING:
     import sounddevice as sd
 else:
@@ -40,6 +42,16 @@ VAD_SAMPLES = 512  # Silero VAD v6 requires exactly 512 samples at 16kHz
 
 # How many consecutive silent VAD frames before we consider speech ended
 SILENCE_FRAMES_THRESHOLD = 23  # ~736ms of silence (23 * 32ms)
+
+# --- Interrupt detection during playback ---
+# First N frames after playback starts are used to measure the echo baseline
+INTERRUPT_BASELINE_FRAMES = 10  # ~320ms to measure speaker echo level
+# Consecutive speech frames required after baseline is established
+INTERRUPT_SPEECH_FRAMES = 8  # ~256ms of sustained loud speech
+# User voice must exceed the echo baseline RMS by this factor
+INTERRUPT_RMS_RATIO = 2.5
+# Absolute minimum RMS to consider (prevents triggering on near-silence)
+INTERRUPT_MIN_RMS = 0.01
 
 # After TTS playback stops, ignore mic for this duration to flush echo residue
 ECHO_COOLDOWN_SECS = 1.5
@@ -112,14 +124,91 @@ class VAD:
         self._context[:] = 0
 
 
+class _RefBuffer:
+    """Thread-safe AEC reference ring buffer that stores numpy chunks.
+
+    The producer is the PortAudio audio-thread callback, which must do
+    O(1) work per push and never iterate samples in Python.  The consumer
+    is the recorder process loop, which pops fixed-size frames.  Old
+    chunks are dropped from the head once the total sample count exceeds
+    ``max_samples`` (about one second by default).
+    """
+
+    def __init__(self, max_samples: int):
+        self._max_samples = max_samples
+        self._chunks: list[np.ndarray] = []
+        self._head = 0  # samples already consumed from chunks[0]
+        self._total = 0
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return self._total
+
+    def push(self, samples: np.ndarray) -> None:
+        if samples.size == 0:
+            return
+        # Detach from any caller-owned buffer (e.g. PortAudio's outdata,
+        # which gets reused after the callback returns).
+        samples = np.array(samples, dtype=np.float32, copy=True)
+        with self._lock:
+            self._chunks.append(samples)
+            self._total += samples.size
+            while self._total > self._max_samples and self._chunks:
+                head = self._chunks[0]
+                head_remaining = head.size - self._head
+                excess = self._total - self._max_samples
+                if excess >= head_remaining:
+                    self._chunks.pop(0)
+                    self._head = 0
+                    self._total -= head_remaining
+                else:
+                    self._head += excess
+                    self._total -= excess
+
+    def extend(self, samples) -> None:
+        """Compat helper: accept any iterable of floats and push as one chunk."""
+        arr = np.asarray(list(samples), dtype=np.float32)
+        self.push(arr)
+
+    def pop(self, n: int) -> np.ndarray:
+        out = np.zeros(n, dtype=np.float32)
+        if n <= 0:
+            return out
+        with self._lock:
+            written = 0
+            while written < n and self._chunks:
+                head = self._chunks[0]
+                avail = head.size - self._head
+                take = min(n - written, avail)
+                out[written : written + take] = head[self._head : self._head + take]
+                self._head += take
+                self._total -= take
+                written += take
+                if self._head >= head.size:
+                    self._chunks.pop(0)
+                    self._head = 0
+        return out
+
+    def clear(self) -> None:
+        with self._lock:
+            self._chunks.clear()
+            self._head = 0
+            self._total = 0
+
+
 class InterruptiblePlayer:
     """Audio player that can be interrupted mid-playback.
 
-    Keeps a persistent output stream open to avoid initialization latency
-    between sentences. The stream is created on first play and reused until
-    the device or sample rate changes.
+    Uses a callback-based PortAudio output stream backed by a numpy buffer.
+    The audio thread always has something to emit — real samples when
+    queued, silence otherwise — so ALSA never under-runs and we avoid the
+    ``mmap_begin`` / ``SetUpBuffers`` failures that a blocking
+    ``stream.write()`` loop hits when streaming TTS can't deliver chunks
+    fast enough.
 
-    Supports echo suppression by pausing a linked AudioRecorder during playback.
+    The stream stays open across plays for the same device + sample rate;
+    ``interrupt()`` flushes the queued buffer rather than tearing the
+    stream down, which avoids races with in-flight callbacks.
     """
 
     def __init__(self):
@@ -130,7 +219,14 @@ class InterruptiblePlayer:
         self._stream: sd.OutputStream | None = None
         self._stream_sr: int = 0
         self._stream_device: int | None = None
+        self._channels: int = 1
         self._recorder: AudioRecorder | None = None  # linked recorder for echo suppression
+        # Reference signal buffer for AEC (16 kHz mono float32)
+        self._ref_buffer: _RefBuffer | None = None
+
+        # Pending audio for the PortAudio callback. Shape (N, channels), float32.
+        self._buf_lock = threading.Lock()
+        self._play_buf = np.zeros((0, 1), dtype=np.float32)
 
     @property
     def is_playing(self) -> bool:
@@ -140,11 +236,59 @@ class InterruptiblePlayer:
         """Link a recorder for automatic echo suppression (pause mic during playback)."""
         self._recorder = recorder
 
+    def enable_ref_capture(self):
+        """Enable capturing the playback reference signal for AEC.
+
+        The buffer holds up to 1 second of 16 kHz audio.  Call this when an
+        AEC-enabled recorder is linked.
+        """
+        self._ref_buffer = _RefBuffer(TARGET_SAMPLE_RATE)
+
+    def get_ref_frame(self, n: int) -> np.ndarray:
+        """Pop *n* samples from the reference buffer.
+
+        Returns zeros when no playback audio is available (silence = no echo).
+        """
+        if self._ref_buffer is None:
+            return np.zeros(n, dtype=np.float32)
+        return self._ref_buffer.pop(n)
+
     def set_device(self, device: int | None):
-        """Set the output device index. Closes current stream if device changed."""
-        if device != self._device:
+        """Set the output device index. Closes current stream if device changed.
+
+        Interrupts any in-flight ``play()`` so we don't yank the stream out
+        from underneath the audio callback.
+        """
+        if device == self._device:
+            return
+        self._stop.set()
+        with self._lock:
+            self._stop.clear()
             self._close_stream()
             self._device = device
+
+    def _callback(self, outdata, frames, time_info, status):
+        """PortAudio audio-thread callback.
+
+        Drains the queued buffer into ``outdata``, padding with silence on
+        underrun so the device never starves.  Pushes the actually-played
+        samples (downsampled to 16 kHz mono) to the AEC reference buffer.
+        Must stay non-blocking — no I/O, no logging, no Python locks held
+        across the resample.
+        """
+        with self._buf_lock:
+            available = self._play_buf.shape[0]
+            n = min(frames, available)
+            if n > 0:
+                outdata[:n] = self._play_buf[:n]
+                self._play_buf = self._play_buf[n:]
+            if n < frames:
+                outdata[n:] = 0
+
+        if n > 0 and self._ref_buffer is not None:
+            mono = outdata[:n, 0] if outdata.ndim == 2 else outdata[:n]
+            ref_16k = _resample(np.asarray(mono, dtype=np.float32), self._stream_sr, TARGET_SAMPLE_RATE)
+            self._ref_buffer.push(ref_16k)
 
     def _get_stream(self, sample_rate: int) -> sd.OutputStream:
         """Get or create a persistent output stream."""
@@ -165,11 +309,14 @@ class InterruptiblePlayer:
             channels = 1
         channels = max(channels, 1)
         self._channels = channels
+        with self._buf_lock:
+            self._play_buf = np.zeros((0, channels), dtype=np.float32)
         self._stream = sd.OutputStream(
             samplerate=sample_rate,
             channels=channels,
             dtype="float32",
             device=self._device,
+            callback=self._callback,
         )
         self._stream.start()
         self._stream_sr = sample_rate
@@ -177,26 +324,33 @@ class InterruptiblePlayer:
         return self._stream
 
     def _close_stream(self):
-        """Close the persistent stream."""
-        if self._stream is not None:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception:
-                pass
-            self._stream = None
-
-    def interrupt(self):
-        """Stop current playback immediately."""
-        self._stop.set()
-        # Abort the stream to stop audio instantly, then reopen on next play
+        """Close the persistent stream and drop any queued audio."""
         if self._stream is not None:
             with contextlib.suppress(Exception):
-                self._stream.abort()
-            self._close_stream()
+                self._stream.stop()
+                self._stream.close()
+            self._stream = None
+        with self._buf_lock:
+            self._play_buf = np.zeros((0, max(self._channels, 1)), dtype=np.float32)
+
+    def _flush_buffer(self):
+        """Drop any queued playback audio. Callback then emits silence."""
+        with self._buf_lock:
+            self._play_buf = np.zeros((0, max(self._channels, 1)), dtype=np.float32)
+
+    def interrupt(self):
+        """Stop current playback immediately.
+
+        Flushes the queued buffer so the callback emits silence on the next
+        tick. The stream itself is left running — touching it from another
+        thread races with in-flight callbacks and triggers the ALSA
+        ``mmap_begin`` failures we're trying to avoid.
+        """
+        self._stop.set()
+        self._flush_buffer()
 
     def play(self, audio: np.ndarray, sample_rate: int = 24_000) -> bool:
-        """Play audio. Returns True if completed, False if interrupted.
+        """Enqueue audio for playback. Returns True if completed, False if interrupted.
 
         Pauses the linked recorder's mic stream during playback to prevent
         the bot from hearing its own voice (echo suppression).
@@ -205,36 +359,61 @@ class InterruptiblePlayer:
             self._stop.clear()
             self._playing.set()
 
-            # Pause mic to prevent echo
             if self._recorder:
                 self._recorder.pause()
 
             try:
-                stream = self._get_stream(sample_rate)
+                self._get_stream(sample_rate)
                 # Reshape mono to match stream channel count
                 if audio.ndim == 1:
                     audio = audio.reshape(-1, 1)
                 if audio.shape[1] < self._channels:
                     audio = np.tile(audio, (1, self._channels))
-                chunk_samples = int(sample_rate * 0.05)  # 50ms chunks
-                for i in range(0, len(audio), chunk_samples):
+                audio = np.ascontiguousarray(audio, dtype=np.float32)
+
+                with self._buf_lock:
+                    self._play_buf = (
+                        audio.copy()
+                        if self._play_buf.shape[0] == 0
+                        else np.concatenate([self._play_buf, audio], axis=0)
+                    )
+
+                # Wait for the callback to drain the queued buffer. Polling
+                # at 20 ms keeps interrupt latency tight without busy-waiting.
+                # Returning here is "early" by one device-latency period —
+                # the last samples are still in PortAudio's internal ring —
+                # but the recorder's ECHO_COOLDOWN_SECS (1.5 s) already
+                # absorbs that tail, and waiting it out would insert an
+                # audible gap between streaming-TTS chunks.
+                while True:
                     if self._stop.is_set():
+                        self._flush_buffer()
                         return False
-                    stream.write(audio[i : i + chunk_samples])
+                    with self._buf_lock:
+                        empty = self._play_buf.shape[0] == 0
+                    if empty:
+                        break
+                    time.sleep(0.02)
+
                 return True
             except Exception:
-                # Stream died — close and retry next time
-                self._close_stream()
+                log.exception("Playback failed")
                 return False
             finally:
                 self._playing.clear()
-                # Resume mic after playback + cooldown
                 if self._recorder:
                     self._recorder.resume_after_cooldown()
 
     def shutdown(self):
-        """Clean up the persistent stream."""
-        self._close_stream()
+        """Clean up the persistent stream.
+
+        Interrupts any in-flight ``play()`` and waits for it to release the
+        lock before tearing the stream down, so the audio callback can't
+        race against close.
+        """
+        self._stop.set()
+        with self._lock:
+            self._close_stream()
 
 
 # Global player instance for interrupt support
@@ -274,6 +453,8 @@ class AudioRecorder:
         on_level: Callable[[float], None] | None = None,
         on_audio_frame: Callable[[np.ndarray], None] | None = None,
         device: int | None = None,
+        aec_backend: str = "none",
+        player_ref: InterruptiblePlayer | None = None,
     ):
         self._on_speech = on_speech
         self._on_interrupt = on_interrupt or (lambda: None)
@@ -281,10 +462,20 @@ class AudioRecorder:
         self._on_audio_frame = on_audio_frame  # called with every 16kHz chunk (for wakeword)
         self._device = device
         self._vad = VAD()
+        self._aec = create_aec(aec_backend)
+        self._use_aec = not isinstance(self._aec, NoAEC)
+        self._player_ref = player_ref
+        if self._use_aec and self._player_ref is not None:
+            self._player_ref.enable_ref_capture()
         self._audio_q: queue.Queue[np.ndarray] = queue.Queue()
         self._running = False
         self._suppressed = False  # True while echo-suppressed (during/after playback)
         self._suppress_gen = 0  # generation counter — stale cooldown timers check this
+        self._interrupt_detect = False  # True = VAD runs for interrupt detection during playback
+        self._interrupt_speech_count = 0  # consecutive speech frames during interrupt detection
+        self._interrupt_baseline_count = 0  # frames used for echo baseline measurement
+        self._interrupt_baseline_rms = 0.0  # measured echo RMS level
+        self._interrupt_speech_buffer: list[np.ndarray] = []  # speech frames captured during interrupt
         self._stream: sd.InputStream | None = None
         self._thread: threading.Thread | None = None
         # Get sample rate and channel count for the selected device
@@ -321,10 +512,29 @@ class AudioRecorder:
             self._thread.join(timeout=2)
 
     def pause(self):
-        """Suppress audio processing (echo suppression). Called by player."""
+        """Suppress normal speech detection but keep VAD running for interrupt detection.
+
+        Called by the player at the start of playback. Instead of fully muting
+        the mic, we enter interrupt-detection mode: VAD still processes frames
+        and fires ``on_interrupt`` if the user speaks over the bot.
+
+        Only resets interrupt-detection state on the first transition from
+        unsuppressed to suppressed, so consecutive chunks (streaming TTS)
+        don't reset the echo baseline measurement mid-playback.
+        """
+        was_suppressed = self._suppressed
         self._suppress_gen += 1
         self._suppressed = True
-        log.debug("Mic suppressed for echo cancellation (gen=%d)", self._suppress_gen)
+        self._interrupt_detect = True
+        if not was_suppressed:
+            self._interrupt_speech_count = 0
+            self._interrupt_baseline_count = 0
+            self._interrupt_baseline_rms = 0.0
+            self._interrupt_speech_buffer.clear()
+            if self._use_aec:
+                self._aec.reset()
+                self._vad.reset()
+        log.debug("Mic suppressed, interrupt detection active (gen=%d)", self._suppress_gen)
 
     def resume_after_cooldown(self):
         """Resume audio processing after cooldown. Called by player.
@@ -347,6 +557,8 @@ class AudioRecorder:
                 except queue.Empty:
                     break
             self._vad.reset()
+            self._interrupt_detect = False
+            self._interrupt_speech_count = 0
             self._suppressed = False
             log.debug("Mic resumed after echo cooldown (gen=%d)", gen)
 
@@ -372,14 +584,16 @@ class AudioRecorder:
                 except queue.Empty:
                     break
             self._vad.reset()
+            self._interrupt_detect = False
+            self._interrupt_speech_count = 0
             self._suppressed = False
             log.debug("Mic force-resumed after %.1fs (gen=%d)", delay, gen)
 
         threading.Thread(target=_resume, daemon=True).start()
 
     def _audio_callback(self, indata, frames, time_info, status):
-        if self._suppressed:
-            return  # Don't even queue audio during suppression
+        if self._suppressed and not self._interrupt_detect:
+            return  # Don't queue audio during full suppression
         # Extract mono (first channel) regardless of input channel count
         mono = indata[:, 0].copy()
         self._audio_q.put(mono)
@@ -395,13 +609,6 @@ class AudioRecorder:
             except queue.Empty:
                 continue
 
-            # If suppressed, discard (shouldn't happen since callback skips, but safety)
-            if self._suppressed:
-                speech_buffer.clear()
-                silence_count = 0
-                in_speech = False
-                continue
-
             # Resample to 16kHz for VAD and STT
             chunk = _resample(raw_chunk, self._device_sr, TARGET_SAMPLE_RATE)
 
@@ -411,6 +618,64 @@ class AudioRecorder:
                     chunk = chunk[:VAD_SAMPLES]
                 else:
                     chunk = np.pad(chunk, (0, VAD_SAMPLES - len(chunk)))
+
+            # Interrupt detection mode: detect user speaking over bot playback.
+            if self._interrupt_detect:
+                is_user_speech = False
+                if self._use_aec:
+                    ref = self._player_ref.get_ref_frame(len(chunk)) if self._player_ref else np.zeros_like(chunk)
+                    cleaned = self._aec.process(chunk, ref)
+                    is_user_speech = self._vad.is_speech(cleaned)
+                else:
+                    rms = float(np.sqrt(np.mean(chunk**2)))
+                    if self._interrupt_baseline_count < INTERRUPT_BASELINE_FRAMES:
+                        self._interrupt_baseline_count += 1
+                        self._interrupt_baseline_rms += (
+                            rms - self._interrupt_baseline_rms
+                        ) / self._interrupt_baseline_count
+                    else:
+                        threshold = max(
+                            self._interrupt_baseline_rms * INTERRUPT_RMS_RATIO,
+                            INTERRUPT_MIN_RMS,
+                        )
+                        is_user_speech = rms > threshold
+
+                if is_user_speech:
+                    # Save the speech frame so it's not lost after interrupt
+                    self._interrupt_speech_buffer.append(chunk.copy())
+                    self._interrupt_speech_count += 1
+                    if self._interrupt_speech_count >= INTERRUPT_SPEECH_FRAMES:
+                        log.info(
+                            "Voice interrupt (%s, %d frames, %d samples captured)",
+                            self._aec.name if self._use_aec else "rms",
+                            self._interrupt_speech_count,
+                            sum(len(f) for f in self._interrupt_speech_buffer),
+                        )
+                        self._interrupt_detect = False
+                        self._interrupt_speech_count = 0
+                        self._on_interrupt()
+                else:
+                    self._interrupt_speech_count = 0
+                    self._interrupt_speech_buffer.clear()
+                continue
+
+            # If suppressed (no interrupt detection either), discard.
+            # But if we have captured interrupt speech, inject it into
+            # the speech buffer so it's included in the next STT pass.
+            if self._suppressed:
+                speech_buffer.clear()
+                silence_count = 0
+                in_speech = False
+                continue
+
+            # After resuming from suppression, prepend any captured
+            # interrupt speech so the user doesn't have to repeat themselves.
+            if self._interrupt_speech_buffer:
+                speech_buffer.extend(self._interrupt_speech_buffer)
+                self._interrupt_speech_buffer.clear()
+                in_speech = True
+                silence_count = 0
+                log.debug("Injected %d interrupt speech frames into buffer", len(speech_buffer))
 
             # Report audio level
             rms = float(np.sqrt(np.mean(chunk**2)))
@@ -436,4 +701,6 @@ class AudioRecorder:
                     silence_count = 0
                     in_speech = False
                     self._vad.reset()
-                    self._on_speech(audio)
+                    # Run in a separate thread so _process_loop stays free
+                    # for interrupt detection during playback.
+                    threading.Thread(target=self._on_speech, args=(audio,), daemon=True).start()

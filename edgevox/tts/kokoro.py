@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import queue
+import threading
 import time
 import urllib.request
 
@@ -94,21 +96,28 @@ class KokoroTTS(BaseTTS):
         return audio
 
     def synthesize_stream(self, text: str):
-        async def _collect():
-            chunks = []
+        """Yield audio chunks as Kokoro produces them (true streaming).
+
+        Bridges the async ``create_stream`` generator to a sync generator
+        using a queue, so each chunk is yielded as soon as it's ready
+        instead of collecting all chunks first.
+        """
+        q: queue.Queue = queue.Queue()
+        sentinel = object()
+
+        async def _pump():
             async for audio, _sr in self._kokoro.create_stream(
                 text,
                 voice=self._voice,
                 speed=1.0,
                 lang=self._lang,
             ):
-                chunks.append(audio)
-            return chunks
+                q.put(audio)
+            q.put(sentinel)
 
-        # Run async generator synchronously
-        loop = asyncio.new_event_loop()
-        try:
-            chunks = loop.run_until_complete(_collect())
-        finally:
-            loop.close()
-        yield from chunks
+        threading.Thread(target=lambda: asyncio.run(_pump()), daemon=True).start()
+        while True:
+            chunk = q.get()
+            if chunk is sentinel:
+                break
+            yield chunk

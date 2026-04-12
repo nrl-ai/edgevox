@@ -47,6 +47,9 @@ dependencies = [
 gpu = [
     "onnxruntime-gpu>=1.21",
 ]
+dtln = [
+    "ai-edge-litert>=2.0",  # TFLite runtime for DTLN-aec neural echo cancellation
+]
 # ros2: rclpy is a system package provided by the ROS2 workspace, not installable from PyPI
 dev = [
     "pytest>=7.0",

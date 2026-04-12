@@ -85,25 +85,42 @@ Auto-selects model size based on hardware:
 - 22,050 Hz output sample rate
 - Apache 2.0 licensed
 
+## Audio Playback
+
+`InterruptiblePlayer` runs a **callback-based** PortAudio output stream. The audio thread is fed by a numpy buffer that the main thread fills via `play()`; on every callback the audio thread copies up to `frames` samples from the buffer into the device's `outdata`, padding with silence on underrun.
+
+This design replaces the older "blocking `stream.write()` in a loop" approach, which suffered intermittent ALSA failures (`alsa_snd_pcm_mmap_begin`, `PaAlsaStream_SetUpBuffers`) whenever streaming TTS could not deliver chunks fast enough — ALSA's mmap recovery path is unreliable across PipeWire/PulseAudio bridges.
+
+Properties of the callback design:
+
+- **No underruns.** The audio thread always has something to emit (real samples or silence), so the device never starves.
+- **Persistent stream.** The output stream is opened once per device + sample rate and reused across `play()` calls; no per-chunk init latency.
+- **Lock-free interrupts.** `interrupt()` only flushes the queued buffer — it never touches the stream itself, eliminating the abort/restart race that caused segfaults under load.
+- **No inter-chunk gap.** `play()` returns as soon as the in-process buffer has been consumed by the callback. The next streaming-TTS chunk lands before PortAudio's internal ring drains, so audio plays continuously without per-chunk silence.
+
 ## Interrupt Mechanism
 
 ```
 User speaks → VAD detects → _on_interrupt() called
   → _interrupted Event is set
-  → play_audio() returns False (stops playback)
+  → InterruptiblePlayer.interrupt() flushes the playback buffer
+  → callback emits silence on the next tick
+  → play_audio() returns False
   → sentence loop breaks
   → new speech is captured and processed
 ```
 
-The interrupt is non-blocking — the pipeline naturally exits at the next checkpoint (sentence boundary or audio chunk).
+The interrupt is non-blocking — the pipeline naturally exits at the next checkpoint (sentence boundary or audio chunk). Cutoff lag is bounded by one PortAudio callback period (~10–20 ms with default latency).
 
 ## Echo Suppression
 
 During TTS playback, the microphone is suppressed to prevent the bot's audio from being captured as speech:
 
-- **Pause**: Mic enters echo suppression when TTS starts playing
-- **Generation counter**: Stale cooldown timers are ignored if a newer pause has been issued
-- **Force resume**: When the pipeline finishes, the mic is re-enabled after a brief delay (0.3s) instead of waiting through the full cooldown
+- **Pause**: Mic enters echo suppression when TTS starts playing.
+- **Generation counter**: Stale cooldown timers are ignored if a newer pause has been issued.
+- **Force resume**: When the pipeline finishes, the mic is re-enabled after a brief delay (0.3s) instead of waiting through the full cooldown.
+
+When an AEC backend is enabled, the player also captures the reference signal (the audio that actually reached the speaker) via a thread-safe **chunked ring buffer** (`_RefBuffer`). The audio-thread producer pushes numpy chunks in O(1) — no Python-level per-sample iteration — and the recorder loop pops fixed-size frames to feed the echo canceller (NLMS, spectral subtraction, or DTLN).
 
 ## LLM Configuration
 
