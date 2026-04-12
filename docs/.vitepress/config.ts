@@ -11,13 +11,11 @@ export default withMermaid(
     srcDir: ".",
     cleanUrls: true,
 
-    appearance: "force-dark",
-
     head: [
       ["link", { rel: "icon", type: "image/svg+xml", href: "/logo.svg" }],
       [
         "meta",
-        { name: "theme-color", content: "#00ff88" },
+        { name: "theme-color", content: "#c96442" },
       ],
     ],
 
@@ -66,6 +64,7 @@ export default withMermaid(
             text: "Reference",
             items: [
               { text: "CLI", link: "/reference/cli" },
+              { text: "Server API", link: "/reference/server-api" },
               { text: "Configuration", link: "/reference/config" },
               { text: "Language Config", link: "/reference/languages" },
             ],
@@ -78,7 +77,7 @@ export default withMermaid(
       ],
 
       footer: {
-        message: "Sub-second local voice AI",
+        message: "Sub-second local voice AI for robots and edge devices",
         copyright: "MIT License",
       },
 
@@ -90,22 +89,22 @@ export default withMermaid(
   }),
   {
     mermaid: {
-      theme: "dark",
+      theme: "neutral",
       themeVariables: {
-        primaryColor: "#00ff88",
-        primaryTextColor: "#c9d1d9",
-        primaryBorderColor: "#1e3a2e",
-        lineColor: "#00e5ff",
-        secondaryColor: "#0d1117",
-        tertiaryColor: "#111820",
-        background: "#0a0e14",
-        mainBkg: "#111820",
-        nodeBorder: "#00ff88",
-        clusterBkg: "#0d1117",
-        clusterBorder: "#1e3a2e",
-        titleColor: "#00ff88",
-        edgeLabelBackground: "#0d1117",
-        nodeTextColor: "#c9d1d9",
+        primaryColor: "#f5ebe0",
+        primaryTextColor: "#1a1613",
+        primaryBorderColor: "#c96442",
+        lineColor: "#c96442",
+        secondaryColor: "#faf7f2",
+        tertiaryColor: "#f5f0e8",
+        background: "#faf7f2",
+        mainBkg: "#f5ebe0",
+        nodeBorder: "#c96442",
+        clusterBkg: "#faf7f2",
+        clusterBorder: "#d4c9b9",
+        titleColor: "#1a1613",
+        edgeLabelBackground: "#faf7f2",
+        nodeTextColor: "#1a1613",
       },
     },
   }
