@@ -1,19 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <!-- Dark background with rounded corners -->
-  <rect width="64" height="64" rx="14" fill="#0a0e14" stroke="#00ff88" stroke-width="1.5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <rect width="48" height="48" rx="11" fill="#2d2d2d"/>
 
-  <!-- "E" letterform — stylized edge -->
-  <path d="M16 16 L16 48 L34 48" stroke="#00ff88" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <path d="M16 32 L30 32" stroke="#00ff88" stroke-width="3.5" stroke-linecap="round"/>
-  <path d="M16 16 L34 16" stroke="#00ff88" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- E letterform -->
+  <path d="M15 13 L15 35 L29 35" stroke="#2ecc71" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M15 13 L29 13" stroke="#2ecc71" stroke-width="3" stroke-linecap="round"/>
+  <path d="M15 24 L26 24" stroke="#2ecc71" stroke-width="3" stroke-linecap="round"/>
 
-  <!-- Sound wave / "V" for Vox -->
-  <path d="M38 20 C42 28, 42 36, 38 44" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round" fill="none"/>
-  <path d="M44 24 C47 30, 47 34, 44 40" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round" fill="none"/>
-  <path d="M50 28 C52 31, 52 33, 50 36" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round" fill="none" opacity="0.6"/>
-
-  <!-- Pulsing dot -->
-  <circle cx="38" cy="32" r="2.5" fill="#00ff88">
-    <animate attributeName="opacity" values="0.4;1;0.4" dur="2s" repeatCount="indefinite"/>
-  </circle>
+  <!-- Sound wave -->
+  <path d="M33 18 C36 22, 36 26, 33 30" stroke="#2ecc71" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.6"/>
 </svg>
