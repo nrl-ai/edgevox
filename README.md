@@ -217,11 +217,18 @@ EdgeVox follows the classical robotics three-layer pattern. The agent framework 
 
 ```mermaid
 flowchart TB
-    D["**Deliberative** — ≤ 1 Hz<br/>LLMAgent · Workflows · Router · Handoff<br/><code>@tool</code> · <code>@skill</code> (Python functions)"]
-    E["**Executive** — 10–50 Hz<br/>Skill library · GoalHandle lifecycle · BT-shaped workflows<br/>goal / feedback / cancel"]
-    R["**Reactive** — ≥ 100 Hz<br/>Motor control · watchdogs · SafetyMonitor<br/><em>(bypasses LLM)</em>"]
-    VP["**Voice pipeline** — the substrate<br/>Mic → VAD → STT → AgentProcessor → SentenceSplit → TTS → Spk"]
-    OUT["ROS2 bridge · IR-SIM (Tier 1) · MuJoCo (Tier 2a, v1.1) · Gazebo (v2)"]
+    D["`**Deliberative** — ≤ 1 Hz
+LLMAgent · Workflows · Router · Handoff
+@tool · @skill (Python functions)`"]
+    E["`**Executive** — 10–50 Hz
+Skill library · GoalHandle lifecycle · BT-shaped workflows
+goal / feedback / cancel`"]
+    R["`**Reactive** — ≥ 100 Hz
+Motor control · watchdogs · SafetyMonitor
+*(bypasses LLM)*`"]
+    VP["`**Voice pipeline** — the substrate
+Mic → VAD → STT → AgentProcessor → SentenceSplit → TTS → Spk`"]
+    OUT["`ROS2 bridge · IR-SIM (Tier 1) · MuJoCo (Tier 2a, v1.1) · Gazebo (v2)`"]
     D --> E --> R
     R --> VP
     VP --> D

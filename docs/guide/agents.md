@@ -229,10 +229,11 @@ def test_set_light_rejects_unknown_room():
 ```mermaid
 flowchart TB
     V[user voice] --> STT[STT]
-    STT --> LLM["<code>LLM.chat_stream(text)</code>"]
-    LLM --> MC{model completion<br/>tool_calls?}
-    MC -- yes --> TR["<code>ToolRegistry.dispatch(name, args)</code>"]
-    TR --> CB["<code>on_tool_call(result)</code>"]
+    STT --> LLM["`LLM.chat_stream(text)`"]
+    LLM --> MC{"`model completion
+tool_calls?`"}
+    MC -- yes --> TR["`ToolRegistry.dispatch(name, args)`"]
+    TR --> CB["`on_tool_call(result)`"]
     CB --> APP[append tool result to history]
     APP --> MC
     MC -- "no (or max_tool_hops hit)" --> REPLY[final text reply]
@@ -291,9 +292,14 @@ Classical robotics partitions the stack by latency budget. EdgeVox agents live i
 
 ```mermaid
 flowchart TB
-    D["**Deliberative** — ≤1 Hz<br/>EdgeVox agents + workflows"]
-    E["**Executive** — 10–50 Hz<br/>Skill library, goal / cancel,<br/>behavior-tree workflows"]
-    R["**Reactive** — ≥100 Hz<br/>Motor control, watchdogs,<br/>safety monitor (no LLM!)"]
+    D["`**Deliberative** — ≤1 Hz
+EdgeVox agents + workflows`"]
+    E["`**Executive** — 10–50 Hz
+Skill library, goal / cancel,
+behavior-tree workflows`"]
+    R["`**Reactive** — ≥100 Hz
+Motor control, watchdogs,
+safety monitor (no LLM!)`"]
     D --> E --> R
     classDef deliberative fill:#e8f0fe,stroke:#1a73e8,color:#0b3d91
     classDef executive    fill:#fef7e0,stroke:#f9ab00,color:#7a4f01
@@ -360,12 +366,17 @@ class AgentContext:
 
 ```mermaid
 flowchart TB
-    U["User says <em>stop</em>"]
-    S["STTProcessor<br/><code>TranscriptionFrame('stop')</code>"]
-    SM["SafetyMonitor → StopFrame<br/><em>(LLM is never consulted)</em>"]
-    P["<code>Pipeline.interrupt()</code><br/>sets <code>ctx.stop.set()</code>"]
-    D["<code>_dispatch_skill</code> poll loop<br/>sees <code>ctx.stop</code> → <code>handle.cancel()</code>"]
-    B["Sim / robot backend freezes the actuator<br/>on its next physics tick"]
+    U["`User says *stop*`"]
+    S["`STTProcessor
+TranscriptionFrame('stop')`"]
+    SM["`SafetyMonitor → StopFrame
+*(LLM is never consulted)*`"]
+    P["`Pipeline.interrupt()
+sets ctx.stop.set()`"]
+    D["`_dispatch_skill poll loop
+sees ctx.stop → handle.cancel()`"]
+    B["`Sim / robot backend freezes the actuator
+on its next physics tick`"]
     U --> S --> SM --> P --> D --> B
     classDef user fill:#e8f0fe,stroke:#1a73e8,color:#0b3d91
     classDef safe fill:#fce8e6,stroke:#d93025,color:#8a1d15

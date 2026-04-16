@@ -22,9 +22,17 @@ Classical robotics partitions the stack by latency budget. EdgeVox agents live O
 
 ```mermaid
 flowchart TB
-    D["**Deliberative** — ≤1 Hz<br/>EdgeVox agents + workflows<br/><em>← this plan</em>"]
-    E["**Executive** — 10–50 Hz<br/>Skill library, BT ticking,<br/>goal / feedback / cancel<br/><em>← new in this plan</em>"]
-    R["**Reactive** — ≥100 Hz<br/>Motor control, watchdogs,<br/>safety monitor (no LLM!)<br/><em>← strictly off-limits to the LLM</em>"]
+    D["`**Deliberative** — ≤1 Hz
+EdgeVox agents + workflows
+*← this plan*`"]
+    E["`**Executive** — 10–50 Hz
+Skill library, BT ticking,
+goal / feedback / cancel
+*← new in this plan*`"]
+    R["`**Reactive** — ≥100 Hz
+Motor control, watchdogs,
+safety monitor (no LLM!)
+*← strictly off-limits to the LLM*`"]
     D --> E --> R
     classDef deliberative fill:#e8f0fe,stroke:#1a73e8,color:#0b3d91
     classDef executive    fill:#fef7e0,stroke:#f9ab00,color:#7a4f01
@@ -95,14 +103,28 @@ Research revealed a sharp split between "hobbyist first-run" sim needs and "grad
 
 ```mermaid
 flowchart TB
-    L7["**Layer 7 — AgentApp** *(extended)*<br/>CLI glue: TUI · simple-ui · text-mode"]
-    L6["**Layer 6 — Pipeline integration** *(minimal change)*<br/>LLMProcessor wraps an Agent instead of LLM<br/>SafetyMonitor sits between STT and LLM"]
-    L5["**Layer 5 — Workflows** *(NEW — BT-shaped)*<br/>Sequence · Fallback · Loop · Router<br/>+ decorators: Retry · Timeout"]
-    L4["**Layer 4 — Agent** *(NEW)*<br/>Agent ABC · LLMAgent · Session<br/>AgentContext · AgentEvent · Handoff"]
-    L3["**Layer 3 — Skills** *(NEW — cancellable robot actions)*<br/>Skill base · GoalHandle · RosActionSkill<br/>WorldState (reactive deps pattern)"]
-    L2["**Layer 2 — Tools** *(unchanged, tiny extension)*<br/>@tool · Tool · ToolRegistry · ToolCallResult"]
-    L1["**Layer 1 — SimEnvironment** *(NEW — shared protocol across tiers)*<br/>SimEnvironment ABC<br/>ToyWorld (stdlib) · IrSimEnvironment · MujocoArmEnvironment *(v1.1)*<br/><em>v2: GazeboEnvironment</em>"]
-    SUB["Substrate: <code>edgevox.llm.LLM</code><br/>already supports tools, persona, history"]
+    L7["`**Layer 7 — AgentApp** *(extended)*
+CLI glue: TUI · simple-ui · text-mode`"]
+    L6["`**Layer 6 — Pipeline integration** *(minimal change)*
+LLMProcessor wraps an Agent instead of LLM
+SafetyMonitor sits between STT and LLM`"]
+    L5["`**Layer 5 — Workflows** *(NEW — BT-shaped)*
+Sequence · Fallback · Loop · Router
++ decorators: Retry · Timeout`"]
+    L4["`**Layer 4 — Agent** *(NEW)*
+Agent ABC · LLMAgent · Session
+AgentContext · AgentEvent · Handoff`"]
+    L3["`**Layer 3 — Skills** *(NEW — cancellable robot actions)*
+Skill base · GoalHandle · RosActionSkill
+WorldState (reactive deps pattern)`"]
+    L2["`**Layer 2 — Tools** *(unchanged, tiny extension)*
+@tool · Tool · ToolRegistry · ToolCallResult`"]
+    L1["`**Layer 1 — SimEnvironment** *(NEW — shared protocol across tiers)*
+SimEnvironment ABC
+ToyWorld (stdlib) · IrSimEnvironment · MujocoArmEnvironment *(v1.1)*
+*v2: GazeboEnvironment*`"]
+    SUB["`Substrate: edgevox.llm.LLM
+already supports tools, persona, history`"]
     L7 --> L6 --> L5 --> L4 --> L3 --> L2 --> L1 --> SUB
     classDef app fill:#e8f0fe,stroke:#1a73e8,color:#0b3d91
     classDef new fill:#e6f4ea,stroke:#34a853,color:#0d652d
@@ -421,15 +443,17 @@ MuJoCo enters as an optional Tier 2 adapter **without disrupting IR-SIM as the d
 
 ```mermaid
 flowchart LR
-    subgraph P1["Phase 1 — Tabletop manipulation *(v1.1, in scope)*"]
+    subgraph P1["Phase 1 — Tabletop manipulation (v1.1, in scope)"]
         A1[MujocoArmEnvironment] --> A2[move_to · grasp · release · goto_home]
-        A2 --> A3[Self-contained gantry MJCF<br/>3-DOF + 2-finger gripper + 3 cubes]
-        A3 --> A4[<code>edgevox-agent robot-panda</code><br/>voice pick-and-stack]
+        A2 --> A3["`Self-contained gantry MJCF
+3-DOF + 2-finger gripper + 3 cubes`"]
+        A3 --> A4["`edgevox-agent robot-panda
+voice pick-and-stack`"]
     end
-    subgraph P2["Phase 2 — Humanoid locomotion *(v1.2, stretch)*"]
+    subgraph P2["Phase 2 — Humanoid locomotion (v1.2, stretch)"]
         B1[Reuses MujocoArmEnvironment base] --> B2[Pre-exported ONNX walking policy]
         B2 --> B3[walk_forward · turn · stop]
-        B3 --> B4[<code>edgevox-agent robot-humanoid</code>]
+        B3 --> B4["edgevox-agent robot-humanoid"]
     end
     P1 -. shared adapter .-> P2
     classDef p1 fill:#e6f4ea,stroke:#34a853,color:#0d652d
