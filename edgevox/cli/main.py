@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from edgevox.agents import AgentContext, AgentEvent, LLMAgent
 from edgevox.audio import AEC_CHOICES, AudioRecorder, play_audio, player
 from edgevox.audio import TARGET_SAMPLE_RATE as MIC_SAMPLE_RATE
 from edgevox.core.frames import (
@@ -241,7 +242,27 @@ class TextBot:
     ):
         print("Loading models...")
         t0 = time.perf_counter()
-        self._llm = LLM(model_path=llm_model, language=language, tools=tools, on_tool_call=on_tool_call)
+        self._llm = LLM(model_path=llm_model, language=language)
+        # Drive tool calling through the hook-based LLMAgent loop —
+        # the LLM wrapper itself no longer handles tool dispatch.
+        self._agent = LLMAgent(
+            name="textbot",
+            description="EdgeVox text-mode assistant.",
+            instructions="You are Vox, EdgeVox's text-mode assistant.",
+            tools=tools,
+            llm=self._llm,
+        )
+        self._ctx = AgentContext()
+        # Tool-call observer: the agent publishes ``tool_call`` events
+        # on its bus; wire them back to the caller's callback for parity
+        # with the previous API.
+        if on_tool_call is not None:
+
+            def _on_event(ev: AgentEvent) -> None:
+                if ev.kind == "tool_call":
+                    on_tool_call(ev.payload)
+
+            self._ctx.bus.subscribe_all(_on_event)
         self._tts = create_tts(language=language, voice=voice, backend=tts_backend)
         elapsed = time.perf_counter() - t0
         print(f"Models loaded in {elapsed:.1f}s\n")
@@ -258,7 +279,7 @@ class TextBot:
                 continue
 
             t0 = time.perf_counter()
-            reply = self._llm.chat(text)
+            reply = self._agent.run(text, self._ctx).reply
             llm_time = time.perf_counter() - t0
             print(f"Bot: {reply} ({llm_time:.2f}s)")
 

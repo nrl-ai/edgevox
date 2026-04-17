@@ -43,6 +43,10 @@ Entrypoints (see `pyproject.toml`):
 
 Models are hosted on `nrl-ai/edgevox-models` (HuggingFace) with fallback to upstream repos.
 
+## Architecture principles
+
+- **Plug-and-play, customizable by default.** Every component — STT backend, TTS backend, LLM, VAD, agent loop behavior, pipeline stage, tool, skill, hook — must be swappable without editing core code. Prefer Protocols, registries, and decorators over hard-coded paths. New behavior lands as a new plugin/hook/backend, not as a patch to an existing module. If you find yourself adding a conditional to core for a specific use case, step back and extract it into an injection point instead.
+
 ## Coding rules
 
 - **Python ≥ 3.10.** Use modern syntax (`X | Y` unions, `match`, `dict[str, int]`).

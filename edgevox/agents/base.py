@@ -14,23 +14,52 @@ The design points inherited from the plan (``docs/plan.md``):
   (router + specialist) instead of smolagents-style 3.
 - ``AgentContext.stop`` is a ``threading.Event`` the pipeline can set to
   preempt in-flight skills; the agent loop checks it between hops.
+- ``AgentContext.hooks`` is a :class:`HookRegistry` that fires at six
+  points in the loop so pluggable behaviors (guardrails, memory,
+  compaction, plan mode, loop detection) compose without patching core.
+- ``AgentContext.blackboard`` / ``artifacts`` / ``memory`` /
+  ``interrupt`` are all optional, independent plug-ins used when the
+  caller opts into multi-agent coordination, handoff artifacts,
+  persistent memory, or barge-in respectively.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from edgevox.agents.bus import EventBus
+from edgevox.agents.hooks import (
+    AFTER_LLM,
+    AFTER_TOOL,
+    BEFORE_LLM,
+    BEFORE_TOOL,
+    ON_RUN_END,
+    ON_RUN_START,
+    Hook,
+    HookAction,
+    HookRegistry,
+    HookResult,
+    ToolCallRequest,
+    fire_chain,
+)
+from edgevox.agents.skills import GoalStatus, Skill
+from edgevox.llm.llamacpp import _strip_thinking, get_system_prompt, parse_tool_calls_from_content
 from edgevox.llm.tools import Tool, ToolCallResult, ToolRegistry
 from edgevox.llm.tools import tool as tool_decorator
 
 if TYPE_CHECKING:
-    from edgevox.agents.skills import GoalHandle, Skill
+    from edgevox.agents.artifacts import ArtifactStore
+    from edgevox.agents.interrupt import InterruptController
+    from edgevox.agents.memory import MemoryStore
+    from edgevox.agents.multiagent import Blackboard
+    from edgevox.agents.skills import GoalHandle
     from edgevox.llm.llamacpp import LLM
 
 log = logging.getLogger(__name__)
@@ -71,6 +100,10 @@ class AgentEvent:
         "skill_cancelled",
         "handoff",
         "safety_preempt",
+        "agent_message",
+        "hook_end_turn",
+        "hook_modify",
+        "render_request",
     ]
     agent_name: str
     payload: Any = None
@@ -83,15 +116,25 @@ EventCallback = Callable[[AgentEvent], None]
 class AgentContext:
     """Dependency-injection + runtime plumbing passed through a run.
 
-    - ``deps`` is the user-supplied dependency object — a ``ToyWorld``,
-      ``SimEnvironment``, ROS2 Node, etc.
-    - ``bus`` is the :class:`EventBus` every agent in this turn
-      publishes to. Subscribers render UI, drive main-thread GUIs,
-      collect metrics. Thread-safe.
-    - ``on_event`` is kept for back-compat; if set, it's registered
-      as a wildcard subscriber during ``__post_init__``.
-    - ``stop`` is the safety-preempt ``threading.Event``. Skills poll
-      it between feedbacks; the agent loop checks between tool hops.
+    Required fields:
+
+    - ``session`` / ``deps`` / ``bus`` — existing.
+
+    Optional plug-ins (each independent; pass only what you use):
+
+    - ``hooks`` — :class:`HookRegistry` firing at 6 fire points. Empty
+      by default.
+    - ``blackboard`` — shared key/value store across agents in a pool.
+    - ``memory`` — long-term :class:`MemoryStore` (facts, episodes).
+    - ``interrupt`` — barge-in :class:`InterruptController`. When set,
+      the agent loop checks ``interrupt.should_stop()`` in addition to
+      ``stop`` and honors it as a safety preempt.
+    - ``artifacts`` — :class:`ArtifactStore` for agent-to-agent handoff
+      via structured files.
+    - ``agent_name`` — populated by :class:`LLMAgent` during ``run()``
+      so ctx-scoped hooks can route their behavior by agent.
+    - ``state`` — per-context scratchpad separate from
+      :attr:`Session.state` (not persisted by :class:`SessionStore`).
     """
 
     session: Session = field(default_factory=Session)
@@ -99,6 +142,13 @@ class AgentContext:
     bus: EventBus = field(default_factory=EventBus)
     on_event: EventCallback | None = None
     stop: threading.Event = field(default_factory=threading.Event)
+    hooks: HookRegistry = field(default_factory=HookRegistry)
+    blackboard: Blackboard | None = None
+    memory: MemoryStore | None = None
+    interrupt: InterruptController | None = None
+    artifacts: ArtifactStore | None = None
+    agent_name: str = ""
+    state: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.on_event is not None:
@@ -109,6 +159,13 @@ class AgentContext:
         self.bus.publish(
             AgentEvent(kind=kind, agent_name=agent_name, payload=payload)  # type: ignore[arg-type]
         )
+
+    def should_stop(self) -> bool:
+        """True if either the safety event or the interrupt controller
+        requests a stop. Checked in hot loops and between tool hops."""
+        if self.stop.is_set():
+            return True
+        return self.interrupt is not None and self.interrupt.should_stop()
 
 
 @dataclass
@@ -122,6 +179,7 @@ class AgentResult:
     skill_goals: list[GoalHandle] = field(default_factory=list)
     handed_off_to: str | None = None
     preempted: bool = False
+    hook_ended: str | None = None  # reason string if a hook ended the turn
 
 
 # --------- Handoff ---------
@@ -161,6 +219,7 @@ class Agent(Protocol):
 
 ToolsArg = Iterable[Callable[..., object] | Tool] | ToolRegistry | None
 SkillsArg = Iterable["Skill"] | None
+HooksArg = Iterable[Hook] | HookRegistry | None
 
 
 class LLMAgent:
@@ -170,6 +229,9 @@ class LLMAgent:
     and inject a single ``LLM`` before the first ``run()`` via
     :meth:`bind_llm`. Workflows and ``AgentApp`` handle this for the
     user so examples never need to think about it.
+
+    Pass ``hooks=[...]`` to register per-agent hooks (fire alongside
+    any hooks on the :class:`AgentContext`).
     """
 
     def __init__(
@@ -182,6 +244,7 @@ class LLMAgent:
         skills: SkillsArg = None,
         llm: LLM | None = None,
         handoffs: list[Agent] | None = None,
+        hooks: HooksArg = None,
         max_tool_hops: int = 3,
     ) -> None:
         self.name = name
@@ -205,6 +268,14 @@ class LLMAgent:
         if handoffs:
             self._register_handoffs(handoffs)
 
+        self._hooks: HookRegistry = HookRegistry()
+        if hooks is not None:
+            if isinstance(hooks, HookRegistry):
+                self._hooks.extend(hooks)
+            else:
+                for h in hooks:
+                    self._hooks.register(h)
+
     # ----- registration helpers -----
 
     def _register_tools(self, tools: ToolsArg) -> None:
@@ -216,10 +287,8 @@ class LLMAgent:
             self._tool_registry.register(t)
 
     def _register_skills(self, skills: SkillsArg) -> None:
-        from edgevox.agents.skills import Skill as SkillBase
-
         for s in skills or []:
-            if not isinstance(s, SkillBase):
+            if not isinstance(s, Skill):
                 raise TypeError(f"{s!r} is not a Skill — did you forget @skill?")
             if s.name in self._skill_registry:
                 log.warning("Skill %r already registered — overwriting.", s.name)
@@ -236,6 +305,11 @@ class LLMAgent:
             self._handoff_registry[tool_name] = agent
             synthetic = _make_handoff_tool(agent)
             self._tool_registry.register(synthetic)
+
+    def register_hook(self, h: Hook) -> LLMAgent:
+        """Attach a hook after construction (useful in AgentApp chains)."""
+        self._hooks.register(h)
+        return self
 
     def bind_llm(self, llm: LLM) -> None:
         """Attach a shared ``LLM`` instance.
@@ -257,6 +331,17 @@ class LLMAgent:
     def skills(self) -> dict[str, Skill]:
         return dict(self._skill_registry)
 
+    @property
+    def hooks(self) -> HookRegistry:
+        return self._hooks
+
+    # ----- hook firing -----
+
+    def _fire(self, point: str, ctx: AgentContext, payload: Any) -> HookResult:
+        """Fire agent-level hooks then ctx-level hooks in order. The
+        second layer sees any modifications from the first."""
+        return fire_chain([self._hooks, ctx.hooks], point, ctx, payload)
+
     # ----- the run() path -----
 
     def _ensure_llm(self) -> LLM:
@@ -274,8 +359,6 @@ class LLMAgent:
         fresh one so multiple agents sharing an LLM don't clobber each
         other's persona."""
         llm = self._ensure_llm()
-        from edgevox.llm.llamacpp import get_system_prompt  # lazy
-
         system = get_system_prompt(
             language=llm._language,
             has_tools=bool(self._tool_registry),
@@ -290,15 +373,48 @@ class LLMAgent:
         ``handed_off_to`` so the caller can trace delegation.
         """
         ctx = ctx or AgentContext()
+        ctx.agent_name = self.name
+        # Per-run ctx scratchpad bookkeeping: attach the tool registry
+        # so hooks that need it (e.g. SchemaRetryHook) can find it.
+        prev_tool_registry = ctx.state.get("__tool_registry__")
+        prev_llm = ctx.state.get("__llm__")
+        ctx.state["__tool_registry__"] = self._tool_registry
+        if self._llm is not None:
+            ctx.state["__llm__"] = self._llm
+
         ctx.emit("agent_start", self.name, {"task": task})
 
-        if ctx.stop.is_set():
+        # Reset interrupt at turn start so a prior turn's interrupt
+        # doesn't pre-empt this one.
+        if ctx.interrupt is not None:
+            ctx.interrupt.reset()
+
+        if ctx.should_stop():
             ctx.emit("safety_preempt", self.name, "stopped before start")
-            return AgentResult(
-                reply="Stopped.",
-                agent_name=self.name,
-                preempted=True,
+            return self._finalize_ctx_state(
+                ctx,
+                AgentResult(reply="Stopped.", agent_name=self.name, preempted=True),
+                prev_tool_registry,
+                prev_llm,
             )
+
+        # Fire on_run_start.
+        r = self._fire(ON_RUN_START, ctx, {"task": task})
+        if r.action is HookAction.END_TURN:
+            ctx.emit("hook_end_turn", self.name, {"point": ON_RUN_START, "reason": r.reason})
+            result = AgentResult(
+                reply=r.payload or "",
+                agent_name=self.name,
+                hook_ended=r.reason,
+            )
+            # Fire on_run_end even on early termination so loggers run.
+            end_r = self._fire(ON_RUN_END, ctx, result)
+            if end_r.action is HookAction.MODIFY and isinstance(end_r.payload, AgentResult):
+                result = end_r.payload
+            ctx.emit("agent_end", self.name, {"reply": result.reply, "hook_ended": r.reason})
+            return self._finalize_ctx_state(ctx, result, prev_tool_registry, prev_llm)
+        if r.action is HookAction.MODIFY and isinstance(r.payload, dict):
+            task = r.payload.get("task", task)
 
         llm = self._ensure_llm()
 
@@ -316,7 +432,7 @@ class LLMAgent:
             messages = [self._build_system_message()]
 
         t0 = time.perf_counter()
-        reply, handoff, captured_tools = self._drive(llm, messages, task, ctx)
+        reply, handoff, captured_tools, ended_by_hook = self._drive(llm, messages, task, ctx)
         # Persist the updated messages back into the session so the next
         # run() against the same context sees them.
         ctx.session.messages = messages
@@ -333,6 +449,11 @@ class LLMAgent:
                 deps=ctx.deps,
                 on_event=ctx.on_event,
                 stop=ctx.stop,
+                hooks=ctx.hooks,  # ctx-level hooks propagate
+                blackboard=ctx.blackboard,
+                memory=ctx.memory,
+                interrupt=ctx.interrupt,
+                artifacts=ctx.artifacts,
             )
             if isinstance(handoff.target, LLMAgent) and handoff.target._llm is None:
                 handoff.target.bind_llm(llm)
@@ -340,17 +461,43 @@ class LLMAgent:
             sub_result.handed_off_to = handoff.target.name
             sub_result.elapsed = time.perf_counter() - t0
             ctx.emit("agent_end", self.name, {"reply": sub_result.reply, "via_handoff": True})
-            return sub_result
+            return self._finalize_ctx_state(ctx, sub_result, prev_tool_registry, prev_llm)
 
-        preempted = ctx.stop.is_set()
+        preempted = ctx.should_stop()
         result = AgentResult(
             reply=reply if not preempted else (reply or "Stopped."),
             agent_name=self.name,
             elapsed=elapsed,
             tool_calls=captured_tools,
             preempted=preempted,
+            hook_ended=ended_by_hook,
         )
+
+        # Fire on_run_end.
+        end_r = self._fire(ON_RUN_END, ctx, result)
+        if end_r.action is HookAction.MODIFY and isinstance(end_r.payload, AgentResult):
+            result = end_r.payload
+
         ctx.emit("agent_end", self.name, {"reply": result.reply, "preempted": preempted})
+        return self._finalize_ctx_state(ctx, result, prev_tool_registry, prev_llm)
+
+    @staticmethod
+    def _finalize_ctx_state(
+        ctx: AgentContext,
+        result: AgentResult,
+        prev_tool_registry: Any,
+        prev_llm: Any,
+    ) -> AgentResult:
+        """Restore ctx.state pointers we set at run() entry so nested
+        runs don't clobber each other's state."""
+        if prev_tool_registry is None:
+            ctx.state.pop("__tool_registry__", None)
+        else:
+            ctx.state["__tool_registry__"] = prev_tool_registry
+        if prev_llm is None:
+            ctx.state.pop("__llm__", None)
+        else:
+            ctx.state["__llm__"] = prev_llm
         return result
 
     def _drive(
@@ -359,8 +506,11 @@ class LLMAgent:
         messages: list[dict],
         task: str,
         ctx: AgentContext,
-    ) -> tuple[str, Handoff | None, list[ToolCallResult]]:
+    ) -> tuple[str, Handoff | None, list[ToolCallResult], str | None]:
         """Drive the LLM loop against a caller-owned messages list.
+
+        Returns ``(reply, handoff, captured_tool_calls, hook_end_reason)``.
+        ``hook_end_reason`` is set when a hook ended the turn early.
 
         The ``messages`` list is mutated in place to append the user
         turn, any tool calls, and the assistant replies — but it is
@@ -369,39 +519,71 @@ class LLMAgent:
         list. The LLM itself is still thread-unsafe and is guarded by
         ``LLM.complete()``'s inference lock.
         """
-        import json as _json
-
         messages.append({"role": "user", "content": task})
         captured: list[ToolCallResult] = []
         tool_schemas = self._tool_registry.openai_schemas() if self._tool_registry else None
 
         for hop in range(self._max_tool_hops + 1):
-            if ctx.stop.is_set():
-                return ("Stopped.", None, captured)
+            if ctx.should_stop():
+                return ("Stopped.", None, captured, None)
+
+            # ----- before_llm -----
+            pre = self._fire(BEFORE_LLM, ctx, {"messages": messages, "hop": hop, "tools": tool_schemas})
+            if pre.action is HookAction.END_TURN:
+                reply = pre.payload or ""
+                messages.append({"role": "assistant", "content": reply})
+                ctx.emit("hook_end_turn", self.name, {"point": BEFORE_LLM, "reason": pre.reason})
+                return (reply, None, captured, pre.reason or "hook ended at before_llm")
+            if pre.action is HookAction.MODIFY and isinstance(pre.payload, dict):
+                # Only allow messages/tools replacement — other keys ignored.
+                new_msgs = pre.payload.get("messages")
+                if isinstance(new_msgs, list):
+                    # Rebind by mutating in place so caller sees updates.
+                    messages[:] = new_msgs
+                new_tools = pre.payload.get("tools", tool_schemas)
+                tool_schemas = new_tools
 
             result = llm.complete(messages, tools=tool_schemas, stream=False)
             message = result["choices"][0]["message"]
             tool_calls = message.get("tool_calls") or []
             raw_content = message.get("content") or ""
-            content = raw_content.strip()
+
+            # Run the full parser chain (think-strip → SGLang → chatml
+            # → Gemma inline) only when the chat template didn't emit
+            # structured tool_calls. Preset-specific parsers are read
+            # off the LLM if available; non-LLM test doubles just skip
+            # them.
             fallback_mode = False
-
+            preset_parsers = getattr(llm, "_tool_call_parsers", ()) or ()
             if not tool_calls:
-                from edgevox.llm.llamacpp import (
-                    _parse_gemma_inline_tool_calls,
+                recovered, cleaned, fallback_mode = parse_tool_calls_from_content(
+                    raw_content,
+                    preset_parsers=preset_parsers,
+                    known_tools=set(self._tool_registry.tools.keys()) if self._tool_registry else None,
+                    tool_schemas=tool_schemas,
                 )
-
-                known = set(self._tool_registry.tools.keys())
-                recovered = _parse_gemma_inline_tool_calls(raw_content, known_tools=known)
                 if recovered:
                     tool_calls = recovered
-                    fallback_mode = True
-                    cut = raw_content.find("<|tool_call>")
-                    content = raw_content[:cut].strip() if cut >= 0 else ""
+                    content = cleaned
+                else:
+                    content = _strip_thinking(raw_content).strip()
+            else:
+                content = raw_content.strip()
+
+            # ----- after_llm -----
+            post = self._fire(AFTER_LLM, ctx, {"content": content, "tool_calls": tool_calls, "hop": hop})
+            if post.action is HookAction.END_TURN:
+                reply = post.payload or content
+                messages.append({"role": "assistant", "content": reply})
+                ctx.emit("hook_end_turn", self.name, {"point": AFTER_LLM, "reason": post.reason})
+                return (reply, None, captured, post.reason or "hook ended at after_llm")
+            if post.action is HookAction.MODIFY and isinstance(post.payload, dict):
+                content = post.payload.get("content", content)
+                tool_calls = post.payload.get("tool_calls", tool_calls)
 
             if not tool_calls:
                 messages.append({"role": "assistant", "content": content})
-                return (content, None, captured)
+                return (content, None, captured, None)
 
             if hop == self._max_tool_hops:
                 log.warning(
@@ -411,7 +593,7 @@ class LLMAgent:
                 )
                 fallback = content or "Sorry, I couldn't finish that request."
                 messages.append({"role": "assistant", "content": fallback})
-                return (fallback, None, captured)
+                return (fallback, None, captured, None)
 
             # ----- dispatch this batch of tool calls (parallel) -----
             #
@@ -435,20 +617,26 @@ class LLMAgent:
                     real_calls.append(call)
 
             if handoff_hit is not None:
-                return ("", handoff_hit, captured)
+                return ("", handoff_hit, captured, None)
 
             # Run each tool/skill in parallel. Tools finish in milliseconds;
             # skills run on their own worker threads but the poll loop
             # here still blocks, so we parallelize the *dispatch* so one
             # slow skill doesn't serialize the others.
-            dispatched = self._dispatch_batch(real_calls, ctx)
+            dispatched, hook_end = self._dispatch_batch(real_calls, ctx, hop=hop)
             captured.extend(out for _, _, out in dispatched)
 
-            if ctx.stop.is_set():
-                return ("Stopped.", None, captured)
+            if hook_end is not None:
+                reply = hook_end.payload or "Stopped by hook."
+                messages.append({"role": "assistant", "content": reply})
+                ctx.emit("hook_end_turn", self.name, {"point": BEFORE_TOOL, "reason": hook_end.reason})
+                return (reply, None, captured, hook_end.reason or "hook ended during tool dispatch")
+
+            if ctx.should_stop():
+                return ("Stopped.", None, captured, None)
 
             if fallback_mode:
-                summary = "; ".join(f"{name} -> {_json.dumps(payload, default=str)}" for name, payload, _ in dispatched)
+                summary = "; ".join(f"{name} -> {json.dumps(payload, default=str)}" for name, payload, _ in dispatched)
                 messages.append({"role": "assistant", "content": content})
                 messages.append(
                     {
@@ -473,40 +661,83 @@ class LLMAgent:
                             "role": "tool",
                             "tool_call_id": call.get("id", f"call_{hop}_{name}"),
                             "name": name,
-                            "content": _json.dumps(payload, default=str),
+                            "content": json.dumps(payload, default=str),
                         }
                     )
 
-        return ("", None, captured)
+        return ("", None, captured, None)
 
     def _dispatch_batch(
         self,
         calls: list[dict],
         ctx: AgentContext,
-    ) -> list[tuple[str, dict, ToolCallResult]]:
+        *,
+        hop: int,
+    ) -> tuple[list[tuple[str, dict, ToolCallResult]], HookResult | None]:
         """Dispatch a batch of tool/skill calls, parallelized when >1.
 
         The LLM can emit multiple tool_calls in a single response; each
         one runs in its own worker so a slow skill doesn't serialize
         the rest. Order of the returned list matches ``calls`` order
         so the LLM sees a deterministic tool-result sequence.
-        """
-        from concurrent.futures import ThreadPoolExecutor
 
+        Returns ``(results, end_turn_hook_result | None)``. If any
+        hook returned ``end_turn`` at before_tool or after_tool, the
+        first such HookResult is propagated out so the outer loop can
+        terminate the turn cleanly.
+        """
         results: list[tuple[str, dict, ToolCallResult]] = [None] * len(calls)  # type: ignore[list-item]
+        end_turn_lock = threading.Lock()
+        end_turn_box: list[HookResult] = []
+
+        def record_end_turn(r: HookResult) -> None:
+            with end_turn_lock:
+                if not end_turn_box:
+                    end_turn_box.append(r)
 
         def run_one(idx: int, call: dict) -> None:
-            if ctx.stop.is_set():
+            if ctx.should_stop() or end_turn_box:
                 return
             fn = call.get("function", {})
             name = fn.get("name", "")
             args_raw = fn.get("arguments", "{}")
-            if name in self._skill_registry:
-                outcome = self._dispatch_skill(name, args_raw, ctx)
+            is_skill = name in self._skill_registry
+
+            # ----- before_tool -----
+            req = ToolCallRequest(
+                name=name,
+                arguments=args_raw,
+                hop=hop,
+                is_skill=is_skill,
+            )
+            pre = self._fire(BEFORE_TOOL, ctx, req)
+            if pre.action is HookAction.END_TURN:
+                record_end_turn(pre)
+                return
+            if pre.action is HookAction.MODIFY and isinstance(pre.payload, ToolCallRequest):
+                req = pre.payload
+
+            if req.skip_dispatch:
+                outcome = ToolCallResult(
+                    name=req.name,
+                    arguments=req.arguments if isinstance(req.arguments, dict) else {},
+                    result=req.synthetic_result,
+                )
+            elif req.is_skill or req.name in self._skill_registry:
+                outcome = self._dispatch_skill(req.name, req.arguments, ctx)
             else:
-                outcome = self._tool_registry.dispatch(name, args_raw, ctx=ctx)
+                outcome = self._tool_registry.dispatch(req.name, req.arguments, ctx=ctx)
+
+            # ----- after_tool -----
+            post = self._fire(AFTER_TOOL, ctx, outcome)
+            if post.action is HookAction.END_TURN:
+                record_end_turn(post)
+                return
+            if post.action is HookAction.MODIFY and isinstance(post.payload, ToolCallResult):
+                outcome = post.payload
+
             payload = {"ok": True, "result": outcome.result} if outcome.ok else {"ok": False, "error": outcome.error}
-            results[idx] = (name, payload, outcome)
+            results[idx] = (req.name, payload, outcome)
             ctx.emit("tool_call", self.name, outcome)
 
         if len(calls) > 1:
@@ -516,7 +747,10 @@ class LLMAgent:
         else:
             for i, c in enumerate(calls):
                 run_one(i, c)
-        return [r for r in results if r is not None]
+
+        dispatched = [r for r in results if r is not None]
+        end = end_turn_box[0] if end_turn_box else None
+        return dispatched, end
 
     def _dispatch_skill(self, name: str, arguments: str | dict[str, Any], ctx: AgentContext) -> ToolCallResult:
         """Dispatch a skill call through its ``GoalHandle`` lifecycle.
@@ -526,16 +760,12 @@ class LLMAgent:
         actual work happens; this method polls so ``ctx.stop`` can
         preempt immediately.
         """
-        import json as _json
-
-        from edgevox.agents.skills import GoalStatus
-
         skill_obj = self._skill_registry[name]
 
         if isinstance(arguments, str):
             try:
-                args = _json.loads(arguments) if arguments else {}
-            except _json.JSONDecodeError as e:
+                args = json.loads(arguments) if arguments else {}
+            except json.JSONDecodeError as e:
                 return ToolCallResult(name=name, arguments={}, error=f"invalid JSON arguments: {e}")
         else:
             args = arguments or {}
@@ -554,7 +784,7 @@ class LLMAgent:
         # ``ctx.stop`` in between for safety preemption.
         poll_interval = 0.05
         while True:
-            if ctx.stop.is_set():
+            if ctx.should_stop():
                 handle.cancel()
                 ctx.emit(
                     "skill_cancelled",
@@ -590,6 +820,52 @@ class LLMAgent:
         result = self.run(task, ctx)
         if result.reply:
             yield result.reply
+
+    # ----- subagent helper -----
+
+    def spawn_subagent(
+        self,
+        task: str,
+        *,
+        parent_ctx: AgentContext,
+        instructions: str | None = None,
+        tools: ToolsArg = None,
+        hooks: HooksArg = None,
+        max_tool_hops: int | None = None,
+    ) -> AgentResult:
+        """Spawn a sub-agent with a fresh :class:`Session` and run ``task``.
+
+        The sub-agent shares the parent's LLM, deps, bus, and any
+        plug-ins (blackboard, memory, interrupt, artifacts) but starts
+        with a clean context window — the recommended pattern for long
+        workflows per Anthropic's harness guidance.
+
+        Returns the sub-agent's :class:`AgentResult` so the parent can
+        fold the summary into its own turn. Artifact handoffs (parent
+        writes to ``ctx.artifacts`` before spawning, subagent reads)
+        are the intended way to carry structured state.
+        """
+        sub = LLMAgent(
+            name=f"{self.name}.sub",
+            description=f"subagent of {self.name}",
+            instructions=instructions or self.instructions,
+            tools=tools if tools is not None else list(self._tool_registry),
+            llm=self._llm,
+            hooks=hooks,
+            max_tool_hops=max_tool_hops if max_tool_hops is not None else self._max_tool_hops,
+        )
+        sub_ctx = AgentContext(
+            session=Session(),
+            deps=parent_ctx.deps,
+            on_event=parent_ctx.on_event,
+            stop=parent_ctx.stop,
+            hooks=parent_ctx.hooks,
+            blackboard=parent_ctx.blackboard,
+            memory=parent_ctx.memory,
+            interrupt=parent_ctx.interrupt,
+            artifacts=parent_ctx.artifacts,
+        )
+        return sub.run(task, sub_ctx)
 
 
 # --------- synthetic handoff tool helper ---------

@@ -317,11 +317,12 @@ class AgentApp:
                 stop_event = threading.Event()
 
     def _needs_agent_path(self) -> bool:
-        """Return True when this app cannot use the legacy voice pipeline
-        path. Apps that rely on skills, deps, or a workflow must route
-        through ``LLMAgent.run()`` so ctx injection and goal-handle
-        dispatch work; the legacy voice pipeline goes through
-        ``LLM._run_agent`` which doesn't know about those.
+        """Return True when this app must be driven by :class:`LLMAgent`
+        directly (skills, deps, or a custom workflow agent). Tool-only
+        apps can go through the :class:`LLM`-shim path because that now
+        delegates to :class:`LLMAgent` internally, but skills and deps
+        need the explicit ``ctx`` injection that only
+        :meth:`LLMAgent.run` performs.
         """
         if self.skills:
             return True
@@ -376,9 +377,9 @@ class AgentApp:
     def _run_tui(self, args: argparse.Namespace, console: Console) -> None:
         if self._needs_agent_path() or self.agent is not None:
             console.print(
-                "[yellow]⚠ Full-TUI mode for agent-driven apps is still "
-                "routing through the legacy LLM path. Use --simple-ui for "
-                "voice mode (agent-aware) or --text-mode for keyboard.[/]"
+                "[yellow]⚠ Full-TUI mode does not yet propagate skills / deps "
+                "/ pre-built agents. Falling back to --simple-ui (which is "
+                "agent-aware). Use --text-mode for a keyboard-only REPL.[/]"
             )
             self._run_simple_voice(args, console)
             return

@@ -14,8 +14,29 @@ First-class Agent abstractions layered on top of the existing tool system:
   reference env used for examples and tests.
 - Workflows: ``Sequence``, ``Fallback``, ``Loop``, ``Router``, ``Retry``,
   ``Timeout`` — Behaviour-Tree-shaped composition of agents.
+- **Hooks** (`hooks.py`, `hooks_builtin.py`) — pluggable agent-loop
+  behavior (guardrails, audit, plan mode, memory, compaction, SLM
+  hardening) at 6 fire points. See the module docstrings for the
+  full matrix.
+- **Memory / compaction** (`memory.py`) — long-term `MemoryStore`,
+  `SessionStore`, `Compactor`, and `NotesFile` primitives.
+- **Artifacts** (`artifacts.py`) — shared file-like store for structured
+  agent-to-agent handoffs (Anthropic harness-design pattern).
+- **Interrupt** (`interrupt.py`) — `InterruptController` barge-in
+  coordinator.
+- **Multi-agent** (`multiagent.py`) — `Blackboard`, `BackgroundAgent`,
+  `AgentPool`, agent-to-agent messaging.
 """
 
+from edgevox.agents.artifacts import (
+    Artifact,
+    ArtifactStore,
+    FileArtifactStore,
+    InMemoryArtifactStore,
+    bytes_artifact,
+    json_artifact,
+    text_artifact,
+)
 from edgevox.agents.base import (
     Agent,
     AgentContext,
@@ -26,6 +47,68 @@ from edgevox.agents.base import (
     Session,
 )
 from edgevox.agents.bus import EventBus, MainThreadScheduler, RenderRequest
+from edgevox.agents.hooks import (
+    AFTER_LLM,
+    AFTER_TOOL,
+    BEFORE_LLM,
+    BEFORE_TOOL,
+    FIRE_POINTS,
+    ON_RUN_END,
+    ON_RUN_START,
+    Hook,
+    HookAction,
+    HookRegistry,
+    HookResult,
+    ToolCallRequest,
+    fire_chain,
+    hook,
+    load_entry_point_hooks,
+)
+from edgevox.agents.hooks_builtin import (
+    AuditLogHook,
+    ContextCompactionHook,
+    EchoingHook,
+    EpisodeLoggerHook,
+    MemoryInjectionHook,
+    NotesInjectorHook,
+    PersistSessionHook,
+    PlanModeHook,
+    SafetyGuardrailHook,
+    TimingHook,
+    TokenBudgetHook,
+    ToolOutputTruncatorHook,
+    console_approver,
+)
+from edgevox.agents.interrupt import (
+    EnergyBargeInWatcher,
+    InterruptController,
+    InterruptEvent,
+    InterruptPolicy,
+)
+from edgevox.agents.memory import (
+    Compactor,
+    Episode,
+    Fact,
+    JSONMemoryStore,
+    JSONSessionStore,
+    MemoryStore,
+    NotesFile,
+    Preference,
+    SessionStore,
+    default_memory_dir,
+    estimate_tokens,
+    new_session_id,
+)
+from edgevox.agents.multiagent import (
+    AgentMessage,
+    AgentPool,
+    BackgroundAgent,
+    Blackboard,
+    Trigger,
+    debounce_trigger,
+    send_message,
+    subscribe_inbox,
+)
 from edgevox.agents.sim import SimEnvironment, ToyWorld
 from edgevox.agents.skills import GoalHandle, GoalStatus, Skill, skill
 from edgevox.agents.workflow import (
@@ -39,27 +122,86 @@ from edgevox.agents.workflow import (
 )
 
 __all__ = [
+    "AFTER_LLM",
+    "AFTER_TOOL",
+    "BEFORE_LLM",
+    "BEFORE_TOOL",
+    "FIRE_POINTS",
+    "ON_RUN_END",
+    "ON_RUN_START",
     "Agent",
     "AgentContext",
     "AgentEvent",
+    "AgentMessage",
+    "AgentPool",
     "AgentResult",
+    "Artifact",
+    "ArtifactStore",
+    "AuditLogHook",
+    "BackgroundAgent",
+    "Blackboard",
+    "Compactor",
+    "ContextCompactionHook",
+    "EchoingHook",
+    "EnergyBargeInWatcher",
+    "Episode",
+    "EpisodeLoggerHook",
     "EventBus",
+    "Fact",
     "Fallback",
+    "FileArtifactStore",
     "GoalHandle",
     "GoalStatus",
     "Handoff",
+    "Hook",
+    "HookAction",
+    "HookRegistry",
+    "HookResult",
+    "InMemoryArtifactStore",
+    "InterruptController",
+    "InterruptEvent",
+    "InterruptPolicy",
+    "JSONMemoryStore",
+    "JSONSessionStore",
     "LLMAgent",
     "Loop",
     "MainThreadScheduler",
+    "MemoryInjectionHook",
+    "MemoryStore",
+    "NotesFile",
+    "NotesInjectorHook",
     "Parallel",
+    "PersistSessionHook",
+    "PlanModeHook",
+    "Preference",
     "RenderRequest",
     "Retry",
     "Router",
+    "SafetyGuardrailHook",
     "Sequence",
     "Session",
+    "SessionStore",
     "SimEnvironment",
     "Skill",
     "Timeout",
+    "TimingHook",
+    "TokenBudgetHook",
+    "ToolCallRequest",
+    "ToolOutputTruncatorHook",
     "ToyWorld",
+    "Trigger",
+    "bytes_artifact",
+    "console_approver",
+    "debounce_trigger",
+    "default_memory_dir",
+    "estimate_tokens",
+    "fire_chain",
+    "hook",
+    "json_artifact",
+    "load_entry_point_hooks",
+    "new_session_id",
+    "send_message",
     "skill",
+    "subscribe_inbox",
+    "text_artifact",
 ]

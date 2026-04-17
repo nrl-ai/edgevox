@@ -133,6 +133,56 @@ def _parse_plain_kv_body(body: str) -> dict[str, Any]:
     return args
 
 
+def parse_tool_calls_from_content(
+    content: str,
+    *,
+    preset_parsers: tuple[str, ...] = (),
+    known_tools: set[str] | None = None,
+    tool_schemas: list[dict] | None = None,
+) -> tuple[list[dict], str, bool]:
+    """Full LLM-output parser chain used by :class:`LLMAgent._drive`.
+
+    Runs, in order: ``<think>`` stripping → preset-specific SGLang
+    detectors → chatml / bare-JSON fallback → Gemma inline / plain-call
+    fallback. Returns ``(tool_calls, cleaned_content, fallback_mode)``
+    where ``fallback_mode`` signals that the caller must feed the
+    results back as a synthetic user message rather than a ``tool`` role
+    (because the chat template didn't produce structured tool_calls).
+
+    This is the single source of truth for "what did the model want to
+    call and what's left of its text reply?". The thread-safe
+    :meth:`LLM.complete` routes structured ``tool_calls`` through the
+    same logic so every agent sees consistent behavior regardless of
+    the GGUF in use.
+    """
+    scrubbed = _strip_thinking(content or "")
+    stripped = scrubbed.strip()
+
+    # 1. SGLang preset-specific detectors (Hermes, Qwen2.5, Llama3.2, …)
+    if preset_parsers:
+        from edgevox.llm.tool_parsers import parse_tool_calls as sglang_parse
+
+        sglang_calls = sglang_parse(scrubbed, tool_schemas, detectors=list(preset_parsers))
+        if sglang_calls:
+            return sglang_calls, "", True
+
+    # 2. Chatml / Llama-native bare JSON
+    chatml_calls = _parse_chatml_tool_calls(scrubbed)
+    if chatml_calls:
+        cut = scrubbed.find("<tool_call>")
+        cleaned = scrubbed[:cut].strip() if cut >= 0 else ""
+        return chatml_calls, cleaned, True
+
+    # 3. Gemma inline markers / plain ``name(args)`` calls
+    gemma_calls = _parse_gemma_inline_tool_calls(scrubbed, known_tools=known_tools)
+    if gemma_calls:
+        cut = scrubbed.find("<|tool_call>")
+        cleaned = scrubbed[:cut].strip() if cut >= 0 else ""
+        return gemma_calls, cleaned, True
+
+    return [], stripped, False
+
+
 def _parse_gemma_inline_tool_calls(content: str, known_tools: set[str] | None = None) -> list[dict] | None:
     """Return synthetic ``tool_calls`` entries parsed from raw Gemma
     template markers OR plain ``name(kwargs)`` text, or ``None``.
@@ -213,15 +263,6 @@ DEFAULT_MAX_TOOL_HOPS = 3
 # SLM agent-loop hardening lives in ``_agent_harness``. See that module and
 # ``docs/reports/slm-tool-calling-benchmark.md`` §7.4 for the research cites.
 from edgevox.llm._agent_harness import (  # noqa: E402  (keep imports near the module top-level usage for clarity)
-    FALLBACK_BUDGET_EXHAUSTED,
-    FALLBACK_ECHOED_PAYLOAD,
-    FALLBACK_LOOP_BREAK,
-    LOOP_BREAK_AFTER,
-    LOOP_HINT_AFTER,
-    MAX_SCHEMA_RETRIES,
-    build_loop_break_payload,
-    build_loop_hint_payload,
-    build_schema_retry_hint,
     fingerprint_call,
     is_argument_shape_error,
     looks_like_echoed_payload,
@@ -479,198 +520,56 @@ class LLM:
         with self._inference_lock:
             return self._llm.create_chat_completion(**kwargs)
 
-    def _run_agent(self) -> str:
-        """Drive the model through tool calls until it produces a text reply.
+    def _ensure_agent(self) -> Any:
+        """Lazily build an :class:`LLMAgent` that owns this LLM's tools.
 
-        Always runs non-streaming. Only used when tools are registered.
-        Applies SLM-specific harness hardening per the research in
-        ``docs/reports/slm-tool-calling-benchmark.md``:
-
-        * **Loop detection.** Fingerprints each ``(name, args)`` pair; a
-          repeated call gets a "you already called this" hint back
-          instead of a real dispatch. Three identical calls in a row
-          hard-break with a fallback answer.
-        * **Schema-retry hint.** When dispatch raises a ``bad arguments``
-          error, the next hop receives the tool's actual JSON schema in
-          the tool-result message so the model can self-correct. Retry
-          budget is :data:`MAX_SCHEMA_RETRIES` per tool per turn.
+        Used by :meth:`chat` / :meth:`chat_stream` when the legacy
+        ``tools=`` constructor arg was provided. The agent is created
+        with :func:`edgevox.llm.hooks_slm.default_slm_hooks` so SLM
+        hardening (loop detection, echoed-payload substitution,
+        schema-retry) is applied automatically — without duplicating
+        the loop implementation inside :class:`LLM`.
         """
-        call_counts: dict[str, int] = {}
-        retry_budget: dict[str, int] = {}
+        if getattr(self, "_shim_agent", None) is None:
+            from edgevox.agents import AgentContext, LLMAgent
+            from edgevox.llm.hooks_slm import default_slm_hooks
 
-        for hop in range(self._max_tool_hops + 1):
-            result = self._llm.create_chat_completion(**self._completion_kwargs(stream=False))
-            message = result["choices"][0]["message"]
-            tool_calls = message.get("tool_calls") or []
-            raw_content = message.get("content") or ""
-            # Strip <think>…</think> blocks (Qwen3 / R1-style reasoning)
-            # before anything else so TTS doesn't read them and the fallback
-            # parsers can still see embedded <tool_call> blobs.
-            scrubbed = _strip_thinking(raw_content)
-            content = scrubbed.strip()
-            fallback_mode = False
+            self._shim_agent = LLMAgent(
+                name="llm-shim",
+                description="compatibility agent for LLM.chat(tools=...)",
+                instructions=DEFAULT_PERSONA,
+                tools=self._registry,
+                hooks=default_slm_hooks(),
+                llm=self,
+                max_tool_hops=self._max_tool_hops,
+            )
+            self._shim_ctx = AgentContext()
+            if self._on_tool_call is not None:
+                cb = self._on_tool_call
 
-            # Parser chain: preset-configured SGLang detectors first, then the
-            # hand-rolled chatml / Gemma regex fallbacks for anything they miss.
-            if not tool_calls and self._tool_call_parsers:
-                from edgevox.llm.tool_parsers import parse_tool_calls
+                def _on_event(ev: Any) -> None:
+                    if getattr(ev, "kind", None) == "tool_call":
+                        try:
+                            cb(ev.payload)
+                        except Exception:
+                            log.exception("on_tool_call callback raised")
 
-                sglang_calls = parse_tool_calls(
-                    scrubbed,
-                    self._registry.openai_schemas() if self._registry else None,
-                    detectors=list(self._tool_call_parsers),
-                )
-                if sglang_calls:
-                    log.debug(
-                        "Recovered %d tool call(s) via SGLang detectors (%s)",
-                        len(sglang_calls),
-                        ", ".join(self._tool_call_parsers),
-                    )
-                    tool_calls = sglang_calls
-                    fallback_mode = True
-                    content = ""  # SGLang detectors consume the whole block
-
-            if not tool_calls:
-                # Qwen3 / chatml-style <tool_call>{...}</tool_call> inside content.
-                chatml_calls = _parse_chatml_tool_calls(scrubbed)
-                if chatml_calls:
-                    log.debug("Recovered %d chatml tool call(s) from content", len(chatml_calls))
-                    tool_calls = chatml_calls
-                    fallback_mode = True
-                    cut = scrubbed.find("<tool_call>")
-                    content = scrubbed[:cut].strip() if cut >= 0 else ""
-
-            if not tool_calls:
-                fallback_calls = _parse_gemma_inline_tool_calls(scrubbed)
-                if fallback_calls:
-                    log.debug("Recovered %d inline tool call(s) from content", len(fallback_calls))
-                    tool_calls = fallback_calls
-                    fallback_mode = True
-                    # Truncate anything from the first tool marker onward — the model
-                    # often hallucinates a tool response + answer after it.
-                    cut = scrubbed.find("<|tool_call>")
-                    content = scrubbed[:cut].strip() if cut >= 0 else ""
-
-            if not tool_calls:
-                # Small models sometimes echo our retry/tool-result payloads
-                # verbatim as their final reply. Substitute a human-friendly
-                # fallback so TTS doesn't read JSON aloud.
-                if looks_like_echoed_payload(content):
-                    log.info("Final reply looks like echoed tool payload; substituting fallback")
-                    content = FALLBACK_ECHOED_PAYLOAD
-                self._history.append({"role": "assistant", "content": content})
-                return content
-
-            if hop == self._max_tool_hops:
-                log.warning("Tool-call budget exhausted after %d hops", self._max_tool_hops)
-                fallback = content or FALLBACK_BUDGET_EXHAUSTED
-                if looks_like_echoed_payload(fallback):
-                    fallback = FALLBACK_ECHOED_PAYLOAD
-                self._history.append({"role": "assistant", "content": fallback})
-                return fallback
-
-            results: list[tuple[str, dict]] = []
-            loop_break = False
-            for call in tool_calls:
-                fn = call.get("function", {})
-                name = fn.get("name", "")
-                arguments = fn.get("arguments", "{}")
-
-                fp = fingerprint_call(name, arguments)
-                call_counts[fp] = call_counts.get(fp, 0) + 1
-                seen = call_counts[fp]
-
-                if seen > LOOP_BREAK_AFTER:
-                    log.warning("Loop detected after %d identical calls to %s; breaking", seen, name)
-                    loop_break = True
-                    results.append((name, build_loop_break_payload(name)))
-                    continue
-
-                if seen > LOOP_HINT_AFTER:
-                    log.info("Repeated call to %s detected; injecting hint instead of dispatching", name)
-                    results.append((name, build_loop_hint_payload(name)))
-                    continue
-
-                outcome = self._registry.dispatch(name, arguments)
-                if self._on_tool_call is not None:
-                    try:
-                        self._on_tool_call(outcome)
-                    except Exception:
-                        log.exception("on_tool_call callback raised")
-
-                # SCHEMA-RETRY: enrich the tool result with the real schema so
-                # the next hop can self-correct. Budget is per-tool-per-turn.
-                if not outcome.ok and is_argument_shape_error(outcome.error):
-                    used = retry_budget.get(name, 0)
-                    if used < MAX_SCHEMA_RETRIES:
-                        retry_budget[name] = used + 1
-                        tool_obj = self._registry.tools.get(name)
-                        hint = build_schema_retry_hint(
-                            name,
-                            outcome.error or "",
-                            tool_obj.parameters if tool_obj else None,
-                        )
-                        results.append((name, {"ok": False, "retry_hint": hint}))
-                        continue
-
-                payload = (
-                    {"ok": True, "result": outcome.result} if outcome.ok else {"ok": False, "error": outcome.error}
-                )
-                results.append((name, payload))
-
-            if loop_break:
-                # Return a direct apology-style reply and skip the next LLM
-                # turn entirely — the model would just re-emit the same call.
-                fallback = content or FALLBACK_LOOP_BREAK
-                self._history.append({"role": "assistant", "content": fallback})
-                return fallback
-
-            if fallback_mode:
-                # The chat template didn't emit structured tool_calls, so a
-                # ``tool`` role message won't be formatted correctly by
-                # llama-cpp's Gemma handler. Feed results back as a user
-                # message instead — works with any chat template.
-                summary = "; ".join(f"{name} -> {json.dumps(payload, default=str)}" for name, payload in results)
-                self._history.append(
-                    {
-                        "role": "assistant",
-                        "content": content,
-                    }
-                )
-                self._history.append(
-                    {
-                        "role": "user",
-                        "content": f"(system: tool results — {summary}. "
-                        f"Now answer the previous request in one short sentence.)",
-                    }
-                )
-            else:
-                self._history.append(
-                    {
-                        "role": "assistant",
-                        "content": content,
-                        "tool_calls": tool_calls,
-                    }
-                )
-                for call, (name, payload) in zip(tool_calls, results, strict=False):
-                    self._history.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.get("id", f"call_{hop}_{name}"),
-                            "name": name,
-                            "content": json.dumps(payload, default=str),
-                        }
-                    )
-        return ""  # unreachable
+                self._shim_ctx.bus.subscribe_all(_on_event)
+        return self._shim_agent
 
     def chat(self, user_message: str) -> str:
-        """Send a message and return the full response."""
-        self._history.append({"role": "user", "content": user_message})
+        """Send a message and return the full response.
 
+        With tools registered, delegates to the hook-based
+        :class:`LLMAgent` loop so SLM hardening, parser chain, and
+        structured tool dispatch stay in one place.
+        """
         t0 = time.perf_counter()
         if self._registry:
-            reply = self._run_agent()
+            agent = self._ensure_agent()
+            reply = agent.run(user_message, self._shim_ctx).reply
         else:
+            self._history.append({"role": "user", "content": user_message})
             result = self._llm.create_chat_completion(**self._completion_kwargs(stream=False))
             reply = _strip_thinking(result["choices"][0]["message"].get("content") or "").strip()
             self._history.append({"role": "assistant", "content": reply})
@@ -685,18 +584,18 @@ class LLM:
         """Stream the final response.
 
         With no tools registered, streams token-by-token. With tools
-        registered, the agent loop runs non-streaming and the final
-        reply is emitted as a single chunk — downstream TTS that
+        registered, delegates to :class:`LLMAgent` (non-streaming) and
+        yields the final reply as a single chunk — downstream TTS that
         sentence-splits still works naturally.
         """
-        self._history.append({"role": "user", "content": user_message})
-
         t0 = time.perf_counter()
         if self._registry:
-            reply = self._run_agent()
+            agent = self._ensure_agent()
+            reply = agent.run(user_message, self._shim_ctx).reply
             if reply:
                 yield reply
         else:
+            self._history.append({"role": "user", "content": user_message})
             full_reply: list[str] = []
             stream = self._llm.create_chat_completion(**self._completion_kwargs(stream=True))
             # Track <think>…</think> so we don't stream reasoning to TTS.

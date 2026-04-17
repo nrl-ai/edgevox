@@ -301,11 +301,10 @@ class TestLLMFallbackAgentLoop:
 
         reply = llm.chat("weather?")
         assert reply == "It's 17 in Paris."
-        # Fallback path pushes results as a synthetic user message, not a tool role
-        feedbacks = [m for m in llm._history if m["role"] == "user" and "tool results" in m["content"]]
-        assert len(feedbacks) == 1
-        assert "Paris" in feedbacks[0]["content"]
-        assert "17" in feedbacks[0]["content"]
+        # Observable behavior: LLM called twice (fallback parse, tool dispatch,
+        # follow-up reply). Internal message shape lives in the shim LLMAgent
+        # now — see tests/harness/ for fire-point coverage.
+        assert mock_llama.create_chat_completion.call_count == 2
 
 
 @tool
@@ -370,16 +369,15 @@ class TestLLMAgent:
         final_response = {"choices": [{"message": {"content": "It's 12:00 PM in LA.", "tool_calls": None}}]}
         mock_llama.create_chat_completion.side_effect = [tool_call_response, final_response]
 
+        seen_results: list = []
+        llm._on_tool_call = seen_results.append
+
         reply = llm.chat("what time is it in LA?")
         assert reply == "It's 12:00 PM in LA."
         assert mock_llama.create_chat_completion.call_count == 2
-
-        # history should have: system, user, assistant(tool_calls), tool(result), assistant(final)
-        tool_msgs = [m for m in llm._history if m["role"] == "tool"]
-        assert len(tool_msgs) == 1
-        payload = json.loads(tool_msgs[0]["content"])
-        assert payload["ok"] is True
-        assert "America/Los_Angeles" in payload["result"]
+        # Observable: the tool was actually dispatched with the right args.
+        assert seen_results and seen_results[0].name == "get_time"
+        assert seen_results[0].arguments == {"timezone": "America/Los_Angeles"}
 
     @patch("llama_cpp.Llama")
     @patch("edgevox.core.gpu.has_metal", return_value=False)
@@ -566,20 +564,14 @@ class TestLLMAgent:
         }
         final = {"choices": [{"message": {"content": "Done.", "tool_calls": None}}]}
         mock_llama.create_chat_completion.side_effect = [wrong_args_call, final]
-        llm.chat("what time is it")
+        reply = llm.chat("what time is it")
 
-        # The tool-result message injected for the retry should carry the
-        # schema hint in plain English so the model can self-correct.
-        tool_msgs = [m for m in llm._history if m.get("role") == "tool"]
-        assert tool_msgs, "no tool-result injected for retry"
-        import json as _json
-
-        payload = _json.loads(tool_msgs[-1]["content"])
-        assert payload["ok"] is False
-        assert "retry_hint" in payload
-        hint = payload["retry_hint"]
-        assert "timezone" in hint  # the correct parameter is named
-        assert "Retry" in hint
+        # Observable: schema retry runs and the conversation completes.
+        assert reply == "Done."
+        assert mock_llama.create_chat_completion.call_count == 2
+        # The hint injection into messages is tested against LLMAgent directly
+        # in tests/harness/test_slm_hooks.py — here we only need to assert the
+        # retry path doesn't crash and still reaches the final reply.
 
     @patch("llama_cpp.Llama")
     @patch("edgevox.core.gpu.has_metal", return_value=False)

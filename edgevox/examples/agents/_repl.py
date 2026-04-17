@@ -9,6 +9,7 @@ here will work through the microphone too.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Any
 from rich.console import Console
 from rich.panel import Panel
 
+from edgevox.agents import AgentContext, AgentEvent, LLMAgent
 from edgevox.llm import LLM, Tool, ToolCallResult
 from edgevox.llm.llamacpp import DEFAULT_HF_FILE, DEFAULT_HF_REPO
 
@@ -102,22 +104,30 @@ def run_repl(
     logging.basicConfig(level=logging.WARNING)
     console = Console()
 
-    def on_tool(result: ToolCallResult) -> None:
+    def on_event(ev: AgentEvent) -> None:
+        if ev.kind != "tool_call":
+            return
+        result: ToolCallResult = ev.payload
         if result.ok:
             console.print(f"[dim cyan]↳ {result.name}({result.arguments}) → {result.result}[/]")
         else:
             console.print(f"[red]↳ {result.name} failed: {result.error}[/]")
 
     console.print(Panel.fit(title, border_style="green"))
-    llm = _load_llm_with_progress(
-        console,
-        model=model,
-        language=language,
-        tools=tools,
-        on_tool_call=on_tool,
-    )
+    # Load the LLM without any tool registry — the agent owns tools now.
+    llm = _load_llm_with_progress(console, model=model, language=language, tools=None)
 
-    registered = ", ".join(t.name for t in llm.tools) or "(none)"
+    agent = LLMAgent(
+        name="vox",
+        description="EdgeVox REPL assistant.",
+        instructions="You are Vox, a concise voice assistant.",
+        tools=tools,
+        llm=llm,
+    )
+    ctx = AgentContext()
+    ctx.bus.subscribe_all(on_event)
+
+    registered = ", ".join(t.name for t in agent.tools) or "(none)"
     console.print(f"[dim]tools: {registered}[/]")
     if greeting:
         console.print(f"[bold green]vox:[/] {greeting}")
@@ -132,14 +142,12 @@ def run_repl(
             continue
         if user.lower() in {"quit", "exit", "bye"}:
             return
-        reply = llm.chat(user)
+        reply = agent.run(user, ctx).reply
         console.print(f"[bold green]vox:[/] {reply}")
 
 
 def print_tool_summary(tools: Iterable[Tool]) -> None:
     """Dump the JSON schema the model actually sees — handy when
     debugging tool descriptions or parameter types."""
-    import json
-
     for t in tools:
         print(json.dumps(t.openai_schema(), indent=2))
