@@ -183,7 +183,7 @@ class TestLLMAgentSkillDispatch:
     def _make(self, mock_llama_cls, skills):
         mock_llm = MagicMock()
         mock_llama_cls.return_value = mock_llm
-        with patch("huggingface_hub.hf_hub_download", return_value="/tmp/fake.gguf"):
+        with patch("edgevox.llm.llamacpp._resolve_model_path", return_value="/tmp/fake.gguf"):
             from edgevox.llm.llamacpp import LLM
 
             llm = LLM(model_path="/tmp/fake.gguf")

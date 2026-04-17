@@ -38,6 +38,8 @@ dependencies = [
     "pythaitts>=0.4",
     "pymicro-wakeword>=2.2",
     "psutil>=5.9",
+    "partial-json-parser>=0.2",
+    "orjson>=3.9",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "websockets>=12",
@@ -107,6 +109,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "tests/**" = ["B011"]
+# Vendored from SGLang — keep patches minimal so upstream drift is traceable.
+"edgevox/llm/tool_parsers/**" = ["E722", "B905", "B007", "SIM108"]
 
 [tool.ruff.format]
 quote-style = "double"

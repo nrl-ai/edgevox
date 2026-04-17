@@ -283,7 +283,11 @@ def main():
         "--llm",
         type=str,
         default=None,
-        help="LLM model: local GGUF path or hf:repo/name:file.gguf (default: Gemma 4 E2B Q4_K_M)",
+        help=(
+            "LLM model: preset slug (e.g. qwen3-1.7b, llama-3.2-3b, robobrain-2.0-7b), "
+            "local GGUF path, or hf:repo/name:file.gguf. Default: gemma-4-e2b preset. "
+            "See edgevox.llm.models.PRESETS for the full catalog."
+        ),
     )
     parser.add_argument(
         "--tts",

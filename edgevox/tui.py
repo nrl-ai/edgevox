@@ -2114,6 +2114,8 @@ def _build_parser() -> argparse.ArgumentParser:
   edgevox --simple-ui                              # Simple CLI interface
   edgevox --web-ui                                 # Web UI (FastAPI + WebSocket)
   edgevox --stt large-v3-turbo --llm /path/to.gguf # Custom STT + local LLM
+  edgevox --llm qwen3-1.7b                         # Swap LLM via preset slug
+  edgevox --llm robobrain-2.0-7b                   # Embodied / spatial reasoning
   edgevox --llm hf:bartowski/Phi-4-mini-instruct-GGUF:Phi-4-mini-instruct-Q4_K_M.gguf
   edgevox --tts piper --voice vi-female            # Force Piper TTS backend
   edgevox --wakeword "hey jarvis" --ros2           # Wake word + ROS2
@@ -2138,7 +2140,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--llm",
         type=str,
         default=None,
-        help="LLM model: local GGUF path or hf:repo/name:file.gguf (default: Gemma 4 E2B Q4_K_M)",
+        help=(
+            "LLM model: preset slug (qwen3-1.7b, llama-3.2-3b, robobrain-2.0-7b, …), "
+            "local GGUF path, or hf:repo/name:file.gguf. Default: gemma-4-e2b."
+        ),
     )
     parser.add_argument(
         "--tts",

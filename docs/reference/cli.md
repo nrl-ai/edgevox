@@ -26,7 +26,7 @@ These options work across all modes:
 | `--voice` | auto | TTS voice name |
 | `--stt` | auto | STT model size (tiny, base, small, medium, large-v3-turbo, sherpa) |
 | `--stt-device` | auto | Device for STT (cuda, cpu) |
-| `--llm` | auto | Path to LLM GGUF file or HuggingFace model spec |
+| `--llm` | auto | LLM GGUF: preset slug (e.g. `qwen3-1.7b`), local path, or `hf:repo:file.gguf` |
 | `--tts` | auto | Force TTS backend (kokoro, piper, supertonic, pythaitts) |
 | `-v, --verbose` | off | Enable debug logging |
 
@@ -81,7 +81,12 @@ edgevox --wakeword "hey pilot" --session-timeout 60
 # Specific audio devices
 edgevox --mic 2 --spk 4
 
-# Custom LLM model from HuggingFace
+# Swap LLM for a preset — see edgevox.llm.models.PRESETS for the catalog
+edgevox --llm qwen3-1.7b
+edgevox --llm llama-3.2-3b
+edgevox --llm robobrain-2.0-7b      # embodied / spatial reasoning
+
+# Custom LLM model from HuggingFace (explicit repo:file)
 edgevox --llm hf:bartowski/Phi-4-mini-instruct-GGUF:Phi-4-mini-instruct-Q4_K_M.gguf
 
 # ROS2 bridge for robotics

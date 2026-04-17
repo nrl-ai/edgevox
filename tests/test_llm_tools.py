@@ -215,6 +215,64 @@ class TestGemmaInlineFallback:
         assert _parse_gemma_inline_tool_calls("Just a normal reply.") is None
 
 
+class TestStripThinking:
+    def test_strips_single_block(self):
+        from edgevox.llm.llamacpp import _strip_thinking
+
+        assert _strip_thinking("<think>reasoning here</think>Hello.") == "Hello."
+
+    def test_strips_multiline_block(self):
+        from edgevox.llm.llamacpp import _strip_thinking
+
+        raw = "<think>\nline 1\nline 2\n</think>\nFinal answer."
+        assert _strip_thinking(raw) == "Final answer."
+
+    def test_no_block_is_passthrough(self):
+        from edgevox.llm.llamacpp import _strip_thinking
+
+        assert _strip_thinking("just a reply") == "just a reply"
+
+
+class TestParseChatmlToolCalls:
+    def test_recovers_tool_call(self):
+        from edgevox.llm.llamacpp import _parse_chatml_tool_calls
+
+        content = '<tool_call>\n{"name": "get_time", "arguments": {"timezone": "Asia/Tokyo"}}\n</tool_call>'
+        calls = _parse_chatml_tool_calls(content)
+        assert calls is not None
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "get_time"
+        assert json.loads(calls[0]["function"]["arguments"]) == {"timezone": "Asia/Tokyo"}
+
+    def test_no_match_returns_none(self):
+        from edgevox.llm.llamacpp import _parse_chatml_tool_calls
+
+        assert _parse_chatml_tool_calls("just text") is None
+
+    def test_invalid_json_skipped(self):
+        from edgevox.llm.llamacpp import _parse_chatml_tool_calls
+
+        assert _parse_chatml_tool_calls("<tool_call>{bogus}</tool_call>") is None
+
+    def test_bare_llama_json_parameters(self):
+        from edgevox.llm.llamacpp import _parse_chatml_tool_calls
+
+        # Llama 3.x native shape: top-level JSON with "function" + "parameters".
+        content = '{"function": "get_time", "parameters": {"timezone": "Asia/Tokyo"}}'
+        calls = _parse_chatml_tool_calls(content)
+        assert calls is not None
+        assert calls[0]["function"]["name"] == "get_time"
+        assert json.loads(calls[0]["function"]["arguments"]) == {"timezone": "Asia/Tokyo"}
+
+    def test_bare_json_name_arguments(self):
+        from edgevox.llm.llamacpp import _parse_chatml_tool_calls
+
+        content = '{"name": "get_time", "arguments": {"timezone": "UTC"}}'
+        calls = _parse_chatml_tool_calls(content)
+        assert calls is not None
+        assert calls[0]["function"]["name"] == "get_time"
+
+
 class TestLLMFallbackAgentLoop:
     @patch("llama_cpp.Llama")
     @patch("edgevox.core.gpu.has_metal", return_value=False)
@@ -228,7 +286,7 @@ class TestLLMFallbackAgentLoop:
             """Get temp."""
             return {"city": city, "temp_c": 17}
 
-        with patch("huggingface_hub.hf_hub_download", return_value="/tmp/m.gguf"):
+        with patch("edgevox.llm.llamacpp._resolve_model_path", return_value="/tmp/m.gguf"):
             from edgevox.llm.llamacpp import LLM
 
             llm = LLM(model_path="/tmp/m.gguf", tools=[get_current_temperature])
@@ -265,7 +323,7 @@ class TestLLMAgent:
         mock_llama = MagicMock()
         mock_llama_cls.return_value = mock_llama
 
-        with patch("huggingface_hub.hf_hub_download", return_value="/tmp/model.gguf"):
+        with patch("edgevox.llm.llamacpp._resolve_model_path", return_value="/tmp/model.gguf"):
             from edgevox.llm.llamacpp import LLM
 
             llm = LLM(model_path="/tmp/model.gguf", tools=tools)
@@ -386,7 +444,7 @@ class TestLLMAgent:
 
         mock_llama = MagicMock()
         mock_llama_cls.return_value = mock_llama
-        with patch("huggingface_hub.hf_hub_download", return_value="/tmp/model.gguf"):
+        with patch("edgevox.llm.llamacpp._resolve_model_path", return_value="/tmp/model.gguf"):
             from edgevox.llm.llamacpp import LLM
 
             llm = LLM(model_path="/tmp/model.gguf", tools=[get_time], on_tool_call=seen.append)
@@ -414,23 +472,114 @@ class TestLLMAgent:
     @patch("edgevox.core.gpu.has_metal", return_value=False)
     @patch("edgevox.core.gpu.get_nvidia_vram_gb", return_value=None)
     def test_budget_exhausted_returns_fallback(self, _vram, _metal, mock_llama_cls):
+        """Budget exhaustion fires when the model keeps tool-calling with *different* args.
+
+        Same-args loops are caught earlier by loop detection — see
+        ``test_loop_detection_breaks_on_repeated_call``.
+        """
         llm, mock_llama = self._make_llm(mock_llama_cls, tools=[get_time])
-        infinite_call = {
+        # Each hop emits a unique ``timezone`` so the fingerprint differs,
+        # exercising the max_tool_hops path rather than loop detection.
+        mock_llama.create_chat_completion.side_effect = [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": f"call_{i}",
+                                    "function": {
+                                        "name": "get_time",
+                                        "arguments": '{"timezone": "tz_' + str(i) + '"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+            for i in range(llm._max_tool_hops + 1)
+        ]
+
+        reply = llm.chat("loop")
+        assert reply != ""
+        # max_tool_hops + 1 calls before the budget path returns a fallback.
+        assert mock_llama.create_chat_completion.call_count == llm._max_tool_hops + 1
+
+    @patch("llama_cpp.Llama")
+    @patch("edgevox.core.gpu.has_metal", return_value=False)
+    @patch("edgevox.core.gpu.get_nvidia_vram_gb", return_value=None)
+    def test_loop_detection_breaks_on_repeated_call(self, _vram, _metal, mock_llama_cls):
+        """Three identical ``(name, args)`` calls trip the loop-break."""
+        llm, mock_llama = self._make_llm(mock_llama_cls, tools=[get_time])
+        identical = {
             "choices": [
                 {
                     "message": {
                         "content": None,
-                        "tool_calls": [{"id": "loop", "function": {"name": "get_time", "arguments": "{}"}}],
+                        "tool_calls": [
+                            {
+                                "id": "loop",
+                                "function": {
+                                    "name": "get_time",
+                                    "arguments": '{"timezone": "UTC"}',
+                                },
+                            }
+                        ],
                     }
                 }
             ]
         }
-        mock_llama.create_chat_completion.return_value = infinite_call
+        mock_llama.create_chat_completion.return_value = identical
 
-        reply = llm.chat("loop")
-        assert "couldn't finish" in reply or reply != ""
-        # max_tool_hops + 1 calls
-        assert mock_llama.create_chat_completion.call_count == llm._max_tool_hops + 1
+        reply = llm.chat("what time is it")
+        assert reply != ""
+        # Loop detector fires on the third identical call and short-circuits
+        # before the model's fourth turn — strictly fewer calls than budget.
+        assert mock_llama.create_chat_completion.call_count <= llm._max_tool_hops
+
+    @patch("llama_cpp.Llama")
+    @patch("edgevox.core.gpu.has_metal", return_value=False)
+    @patch("edgevox.core.gpu.get_nvidia_vram_gb", return_value=None)
+    def test_schema_retry_hint_injected_on_wrong_kwargs(self, _vram, _metal, mock_llama_cls):
+        """Dispatch failure on bad kwargs injects a schema hint for one retry."""
+        llm, mock_llama = self._make_llm(mock_llama_cls, tools=[get_time])
+        wrong_args_call = {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "function": {
+                                    "name": "get_time",
+                                    # ``location`` is not in the tool signature.
+                                    "arguments": '{"location": "Tokyo"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        final = {"choices": [{"message": {"content": "Done.", "tool_calls": None}}]}
+        mock_llama.create_chat_completion.side_effect = [wrong_args_call, final]
+        llm.chat("what time is it")
+
+        # The tool-result message injected for the retry should carry the
+        # schema hint in plain English so the model can self-correct.
+        tool_msgs = [m for m in llm._history if m.get("role") == "tool"]
+        assert tool_msgs, "no tool-result injected for retry"
+        import json as _json
+
+        payload = _json.loads(tool_msgs[-1]["content"])
+        assert payload["ok"] is False
+        assert "retry_hint" in payload
+        hint = payload["retry_hint"]
+        assert "timezone" in hint  # the correct parameter is named
+        assert "Retry" in hint
 
     @patch("llama_cpp.Llama")
     @patch("edgevox.core.gpu.has_metal", return_value=False)

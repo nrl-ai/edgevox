@@ -1,0 +1,23 @@
+Portions of this subpackage are derived from SGLang's tool-call parser
+implementation:
+
+    https://github.com/sgl-project/sglang
+    Copyright 2023-2025 SGLang Team
+    Licensed under the Apache License, Version 2.0
+
+Specifically, the following files are adapted from
+`python/sglang/srt/function_call/` with minimal modifications (local `Tool`
+dataclass in place of SGLang's OpenAI protocol type, strict unknown-tool
+handling in place of the SGLang env var, and EdgeVox-native logging):
+
+    base.py          (from base_format_detector.py)
+    core_types.py    (from core_types.py)
+    utils.py         (from utils.py)
+    detectors/hermes.py      (from hermes_detector.py)
+    detectors/llama32.py     (from llama32_detector.py)
+    detectors/mistral.py     (from mistral_detector.py)
+    detectors/pythonic.py    (from pythonic_detector.py)
+    detectors/qwen25.py      (from qwen25_detector.py)
+
+EdgeVox itself is MIT-licensed. Apache-2.0 and MIT are compatible; see the
+file headers of each vendored file for SPDX identifiers.

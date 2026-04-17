@@ -83,6 +83,32 @@ class TestResolveModelPath:
         assert result == "/cache/default.gguf"
         mock_hf.assert_called_once_with(repo_id=DEFAULT_HF_REPO, filename=DEFAULT_HF_FILE)
 
+    @patch("huggingface_hub.hf_hub_download", return_value="/cache/qwen.gguf")
+    def test_preset_prefix(self, mock_hf):
+        from edgevox.llm.models import PRESETS
+
+        result = _resolve_model_path("preset:qwen3-1.7b")
+        assert result == "/cache/qwen.gguf"
+        expected = PRESETS["qwen3-1.7b"]
+        mock_hf.assert_called_once_with(repo_id=expected.repo, filename=expected.filename)
+
+    @patch("huggingface_hub.hf_hub_download", return_value="/cache/llama.gguf")
+    def test_bare_preset_slug(self, mock_hf):
+        from edgevox.llm.models import PRESETS
+
+        result = _resolve_model_path("llama-3.2-3b")
+        assert result == "/cache/llama.gguf"
+        expected = PRESETS["llama-3.2-3b"]
+        mock_hf.assert_called_once_with(repo_id=expected.repo, filename=expected.filename)
+
+    def test_unknown_preset_raises(self):
+        with pytest.raises(KeyError, match="Unknown LLM preset"):
+            _resolve_model_path("preset:does-not-exist")
+
+    def test_bogus_path_raises(self):
+        with pytest.raises(FileNotFoundError):
+            _resolve_model_path("/nonexistent/path/to/model.gguf")
+
 
 class TestLLM:
     def _make_llm(self, mock_llama_cls):
@@ -90,7 +116,7 @@ class TestLLM:
         mock_llama = MagicMock()
         mock_llama_cls.return_value = mock_llama
 
-        with patch("huggingface_hub.hf_hub_download", return_value="/tmp/model.gguf"):
+        with patch("edgevox.llm.llamacpp._resolve_model_path", return_value="/tmp/model.gguf"):
             from edgevox.llm.llamacpp import LLM
 
             llm = LLM(model_path="/tmp/model.gguf")

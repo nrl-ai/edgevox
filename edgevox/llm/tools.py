@@ -277,9 +277,18 @@ class ToolRegistry:
             try:
                 decoded = json.loads(arguments) if arguments else {}
             except json.JSONDecodeError as e:
-                return ToolCallResult(name=name, arguments={}, error=f"invalid JSON arguments: {e}")
+                return ToolCallResult(name=str(name), arguments={}, error=f"invalid JSON arguments: {e}")
         else:
             decoded = arguments or {}
+
+        # Some llama-cpp chat handlers return ``name`` as a dict on failure;
+        # coerce to a string so ``dict.get`` doesn't raise ``TypeError``.
+        if not isinstance(name, str):
+            return ToolCallResult(
+                name=str(name),
+                arguments=decoded,
+                error=f"non-string tool name from model: {name!r}",
+            )
 
         tool_obj = self.tools.get(name)
         if tool_obj is None:
