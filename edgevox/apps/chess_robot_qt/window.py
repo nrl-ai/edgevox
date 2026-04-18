@@ -90,15 +90,23 @@ class RookWindow(QMainWindow):
         main_row.setContentsMargins(14, 10, 14, 10)
         main_row.setSpacing(14)
 
-        # Left column — board + history.
+        # Left column — framed board + history strip.
         left = QVBoxLayout()
+        left.setSpacing(6)
+        board_frame = QFrame()
+        board_frame.setStyleSheet(
+            "QFrame { background: #0b111a; border: 1px solid #1b2634; border-radius: 10px; padding: 8px; }"
+        )
+        bf_col = QVBoxLayout(board_frame)
+        bf_col.setContentsMargins(10, 10, 10, 10)
         self._board = ChessBoardView()
         self._board.move_requested.connect(self._on_board_move)
         self._board.setMinimumSize(420, 420)
         self._board.set_orientation(bridge.config.user_plays)
-        left.addWidget(self._board, stretch=1)
+        bf_col.addWidget(self._board)
+        left.addWidget(board_frame, stretch=1)
         self._history = QLabel("no moves yet")
-        self._history.setStyleSheet("color: #9aa7b9; font-family: monospace; font-size: 11px;")
+        self._history.setStyleSheet("color: #9aa7b9; font-family: monospace; font-size: 11px; padding: 2px 8px;")
         self._history.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left.addWidget(self._history)
         main_row.addLayout(left, stretch=60)
@@ -106,10 +114,23 @@ class RookWindow(QMainWindow):
         # Right column — face, chat, input.
         right = QVBoxLayout()
         right.setSpacing(10)
+        face_frame = QFrame()
+        face_frame.setStyleSheet("QFrame { background: #0b111a; border: 1px solid #1b2634; border-radius: 10px; }")
+        face_col = QVBoxLayout(face_frame)
+        face_col.setContentsMargins(10, 10, 10, 6)
+        face_col.setSpacing(4)
         self._face = RobotFaceWidget()
-        self._face.setFixedHeight(240)
+        self._face.setFixedHeight(220)
         self._face.set_persona(bridge.config.persona)
-        right.addWidget(self._face, stretch=0)
+        face_col.addWidget(self._face, stretch=0)
+        self._persona_label = QLabel(bridge.config.persona.replace("_", " ").title())
+        self._persona_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._persona_label.setStyleSheet(
+            f"color: {self._accent.name()}; font-family: monospace; font-size: 11px; "
+            "letter-spacing: 2px; text-transform: uppercase;"
+        )
+        face_col.addWidget(self._persona_label, stretch=0)
+        right.addWidget(face_frame, stretch=0)
 
         self._reply_label = QLabel("")
         self._reply_label.setWordWrap(True)
@@ -128,11 +149,8 @@ class RookWindow(QMainWindow):
         main_row.addLayout(right, stretch=40)
         col.addWidget(main, stretch=1)
 
-        # Status footer.
-        footer = QLabel("enter to send · esc to clear · ⌘N for new game")
-        footer.setStyleSheet("color: #5b6a7d; font-family: monospace; font-size: 10px; padding: 4px 12px;")
-        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        col.addWidget(footer)
+        # Keyboard shortcuts live in the Menu dropdown now — no need
+        # for a duplicate footer strip here.
 
         # Wire the bridge → UI signals.
         b = bridge.signals
@@ -198,6 +216,7 @@ class RookWindow(QMainWindow):
         self._face.set_mood(mood)
         self._face.set_tempo(tempo)
         self._face.set_persona(persona)
+        self._persona_label.setText(persona.replace("_", " ").title())
 
     def _on_reply(self, text: str) -> None:
         text = (text or "").strip()
