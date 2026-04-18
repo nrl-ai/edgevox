@@ -13,12 +13,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 pytest.importorskip("qtawesome")
 
-from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtGui import QColor  # noqa: E402
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 
-from edgevox.apps.chess_robot_qt.board import ChessBoardView  # noqa: E402
-from edgevox.apps.chess_robot_qt.chat import ChatView  # noqa: E402
-from edgevox.apps.chess_robot_qt.face import RobotFaceWidget  # noqa: E402
+from edgevox.apps.chess_robot_qt.board import ChessBoardView
+from edgevox.apps.chess_robot_qt.chat import ChatView
+from edgevox.apps.chess_robot_qt.face import RobotFaceWidget
 
 
 class TestRobotFaceWidget:

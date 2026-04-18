@@ -1,16 +1,20 @@
 # RookApp — PySide6 desktop build matrix.
 #
-# Builds the Qt app into a single-executable installer for each host
-# OS using PyInstaller (GPL with bundling exception; the produced
-# binary inherits the app's MIT licence, not GPL). Cross-compilation
-# isn't viable for PyInstaller (each host produces its own platform),
-# so the matrix pins to native runners.
+# Builds a onedir PyInstaller bundle per host OS. The Qt app imports
+# the wider EdgeVox framework (agents, LLM, chess integration) but
+# deliberately skips STT/TTS/wake-word backends at startup — the spec
+# file excludes their heavy deps so the bundle stays around ~400 MB.
 #
 # Triggered on:
-#   - push to main (smoke-build; artifacts uploaded, not released)
-#   - tags matching `rook-v*` → installers attached to the GitHub
-#     release with the same name
+#   - push to main touching rookapp code (smoke-build; artifacts
+#     uploaded, not released)
+#   - tags matching ``rook-v*`` → zipped bundles attached to the
+#     GitHub release with the same name
 #   - manual workflow_dispatch
+#
+# Every matrix leg runs a self-test on the produced binary
+# (``RookApp --self-test``) to catch missing hidden imports /
+# assets in the frozen bundle before users see a crash.
 
 name: RookApp Desktop
 
@@ -19,12 +23,20 @@ on:
     branches: [main]
     tags: ["rook-v*"]
     paths:
-      - "edgevox/**"
+      - "edgevox/apps/chess_robot_qt/**"
+      - "edgevox/agents/**"
+      - "edgevox/llm/**"
+      - "edgevox/integrations/chess/**"
+      - "edgevox/examples/agents/chess_robot/**"
+      - "rookapp_entry.py"
+      - "packaging/rookapp.spec"
       - "pyproject.toml"
       - ".github/workflows/rookapp-desktop.yml"
   pull_request:
     paths:
-      - "edgevox/apps/**"
+      - "edgevox/apps/chess_robot_qt/**"
+      - "rookapp_entry.py"
+      - "packaging/rookapp.spec"
       - ".github/workflows/rookapp-desktop.yml"
   workflow_dispatch:
 
@@ -36,16 +48,12 @@ jobs:
         include:
           - name: macos-arm
             runner: macos-14
-            ext: dmg
           - name: macos-intel
             runner: macos-13
-            ext: dmg
           - name: windows
             runner: windows-latest
-            ext: exe
           - name: linux
             runner: ubuntu-22.04
-            ext: AppImage
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -59,9 +67,11 @@ jobs:
           cache: pip
 
       # ---- Platform-specific system deps ----
-      # PySide6 wheels are self-contained, but stockfish (used at
-      # runtime by the agent) is installed separately per OS, and
-      # Linux needs a handful of X libs for pyinstaller bundling.
+      # Stockfish is the chess engine the agent shells out to; we
+      # install it so the smoke test can at least exercise the engine
+      # preflight, even though we don't actually play a game in CI.
+      # Linux additionally needs the X/xcb libs for PySide6 plugin
+      # loading and xvfb so the self-test can create a QApplication.
       - name: Install Linux system deps
         if: matrix.runner == 'ubuntu-22.04'
         run: |
@@ -69,8 +79,21 @@ jobs:
           sudo apt-get install -y \
             stockfish \
             libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1 \
             libxkbcommon-x11-0 \
-            fuse libfuse2
+            libegl1 \
+            libgl1 \
+            libopengl0 \
+            libfontconfig1 \
+            libdbus-1-3 \
+            xvfb
 
       - name: Install macOS system deps
         if: startsWith(matrix.runner, 'macos-')
@@ -78,47 +101,86 @@ jobs:
 
       - name: Install Windows system deps
         if: matrix.runner == 'windows-latest'
-        # Stockfish for Windows via winget would require elevation;
-        # prefer bundling a static binary under ``assets/`` at build
-        # time if you want full offline experience. For now we trust
-        # that users have it on PATH.
+        # Stockfish on Windows: users install it themselves. The
+        # self-test doesn't exercise engine startup, only imports.
+        shell: bash
         run: echo "stockfish must be provided by the user on Windows"
 
-      - name: Install edgevox with desktop extras
-        run: pip install -e ".[desktop]" pyinstaller
+      # ---- Python deps ----
+      # We install the project in editable mode with the desktop
+      # extras (PySide6, qtawesome, rlottie-python, pillow) plus the
+      # full edgevox runtime. The spec file excludes the heavy
+      # STT/TTS deps so they're installed but not bundled.
+      - name: Upgrade pip + wheel
+        shell: bash
+        run: python -m pip install --upgrade pip wheel
 
-      - name: Build executable (PyInstaller)
+      - name: Install edgevox
+        shell: bash
+        run: pip install -e ".[desktop]"
+
+      - name: Install PyInstaller
+        shell: bash
+        run: pip install "pyinstaller>=6.10"
+
+      # ---- Build ----
+      - name: Build onedir bundle
         shell: bash
         run: |
-          pyinstaller \
-            --name RookApp \
-            --onefile \
-            --windowed \
-            --hidden-import edgevox.apps.chess_robot_qt \
-            --collect-submodules edgevox \
-            -p . \
-            rookapp_entry.py || true
-          # If the entry shim doesn't exist, create it and retry once.
-          if [ ! -d dist ]; then
-            python -c "from edgevox.apps.chess_robot_qt.main import main; main()" || true
-            cat > rookapp_entry.py <<'PY'
-          from edgevox.apps.chess_robot_qt.main import main
-          if __name__ == "__main__":
-              main()
-          PY
-            pyinstaller --name RookApp --onefile --windowed \
-              --hidden-import edgevox.apps.chess_robot_qt \
-              --collect-submodules edgevox \
-              -p . rookapp_entry.py
-          fi
+          pyinstaller packaging/rookapp.spec --clean --noconfirm --log-level INFO
           ls -la dist/
+          ls -la dist/RookApp/ | head -30
+
+      # ---- Smoke test — verify the built binary imports cleanly ----
+      # The self-test imports every module the real launch path hits
+      # and checks bundled assets exist. If a hidden import was missed
+      # or an asset wasn't collected, this fails the build loudly.
+      - name: Smoke test (Linux, via xvfb)
+        if: matrix.runner == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          chmod +x dist/RookApp/RookApp
+          xvfb-run -a --server-args="-screen 0 1024x768x24" \
+            dist/RookApp/RookApp --self-test
+
+      - name: Smoke test (macOS)
+        if: startsWith(matrix.runner, 'macos-')
+        shell: bash
+        run: |
+          chmod +x dist/RookApp/RookApp
+          dist/RookApp/RookApp --self-test
+
+      - name: Smoke test (Windows)
+        if: matrix.runner == 'windows-latest'
+        shell: cmd
+        run: |
+          dist\RookApp\RookApp.exe --self-test
+
+      # ---- Package ----
+      # Zip the onedir output per platform — GH artifact upload
+      # already zips, but a tagged, pre-zipped bundle is what we
+      # attach to the release. Naming follows ``RookApp-<os>.zip``.
+      - name: Package bundle (Unix)
+        if: matrix.runner != 'windows-latest'
+        shell: bash
+        run: |
+          cd dist
+          zip -rq RookApp-${{ matrix.name }}.zip RookApp
+          ls -la RookApp-${{ matrix.name }}.zip
+
+      - name: Package bundle (Windows)
+        if: matrix.runner == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\RookApp -DestinationPath dist\RookApp-${{ matrix.name }}.zip
+          Get-ChildItem dist\RookApp-${{ matrix.name }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: rookapp-${{ matrix.name }}
-          path: dist/*
-          if-no-files-found: warn
-          retention-days: 7
+          path: dist/RookApp-${{ matrix.name }}.zip
+          if-no-files-found: error
+          retention-days: 14
 
   release:
     needs: build
@@ -132,9 +194,10 @@ jobs:
           path: artifacts
 
       - name: Flatten artifacts
+        shell: bash
         run: |
           mkdir -p release-assets
-          find artifacts -type f -exec cp {} release-assets/ \;
+          find artifacts -type f -name "*.zip" -exec cp {} release-assets/ \;
           ls -la release-assets/
 
       - uses: softprops/action-gh-release@v2
