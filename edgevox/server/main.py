@@ -13,8 +13,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib
 import logging
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import JSONResponse
@@ -26,6 +28,27 @@ from edgevox.server.ws import handle_connection
 log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _load_agent(spec: str, core: ServerCore) -> tuple[Any, Any]:
+    """Resolve ``module:factory`` → ``(agent, deps)``.
+
+    The factory may return either an ``Agent`` (``deps=None`` implied)
+    or a ``(agent, deps)`` tuple. Anything else is rejected with a
+    friendly error so a misconfigured spec fails early at boot rather
+    than on the first WebSocket connection.
+    """
+    if ":" not in spec:
+        raise ValueError(f"--agent expected 'module:factory', got {spec!r}")
+    module_name, _, attr = spec.partition(":")
+    module = importlib.import_module(module_name)
+    factory = getattr(module, attr, None)
+    if factory is None:
+        raise ValueError(f"--agent: {module_name}.{attr} not found")
+    result = factory(core)
+    if isinstance(result, tuple) and len(result) == 2:
+        return result
+    return result, None
 
 
 def create_app(core: ServerCore) -> FastAPI:
@@ -74,6 +97,17 @@ def main() -> None:
     parser.add_argument("--llm", default=None, help="LLM GGUF path or hf:repo:file")
     parser.add_argument("--tts", default=None, choices=["kokoro", "piper"], help="TTS backend")
     parser.add_argument("--voice", default=None, help="TTS voice name")
+    parser.add_argument(
+        "--agent",
+        default=None,
+        help=(
+            "Dotted path to an agent factory 'module:factory'. The factory receives "
+            "the ServerCore and returns either an Agent or (agent, deps). When set, "
+            "the WebSocket pipeline routes every turn through LLMAgent.run with hooks, "
+            "tools, and ctx.deps. Example: "
+            "'edgevox.examples.agents.chess_partner:build_server_agent'."
+        ),
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Debug logging")
     args = parser.parse_args()
 
@@ -90,6 +124,17 @@ def main() -> None:
         tts_backend=args.tts,
         voice=args.voice,
     )
+    if args.agent:
+        try:
+            agent, deps = _load_agent(args.agent, core)
+        except Exception as e:
+            raise SystemExit(f"failed to load --agent {args.agent!r}: {e}") from e
+        # Ensure the agent is bound to the shared LLM; factories can
+        # skip the bind when they want to keep a per-session LLM.
+        if hasattr(agent, "bind_llm") and getattr(agent, "llm", None) is None:
+            agent.bind_llm(core.llm)
+        core.bind_agent(agent, deps)
+        log.info("agent bound: %s", args.agent)
     app = create_app(core)
 
     import uvicorn

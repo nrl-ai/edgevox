@@ -26,13 +26,15 @@ Requirements:
 The current board is rendered in the console / TUI automatically via the
 ``ChessEnvironment`` state-listener subscription (see ``_pre_run`` below).
 
-Web UI: the React components under ``webui/src/components/``
-(``ChessBoard.tsx`` / ``EvalBar.tsx`` / ``MoveList.tsx``) render from
-``chess_state`` JSON messages. The ``edgevox-serve`` WebSocket backend
-doesn't currently drive ``LLMAgent``, so emitting these messages from
-the server is a follow-up — the components are ready, the wire format
-is typed in ``webui/src/lib/ws-client.ts``, and the React panel
-mounts conditionally whenever a ``chess_state`` arrives.
+Web UI: run the WebSocket server with the chess agent bound::
+
+    edgevox-serve --agent edgevox.examples.agents.chess_partner:build_server_agent
+    # or: EDGEVOX_CHESS_PERSONA=trash_talker edgevox-serve --agent ...
+
+The React components under ``webui/src/components/`` (``ChessBoard.tsx``
+/ ``EvalBar.tsx`` / ``MoveList.tsx``) pick up ``chess_state`` events
+forwarded automatically by the server pipeline and mount a live board
+panel next to the chat.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ from typing import Any
 
 from rich.console import Console
 
-from edgevox.agents import AgentContext
+from edgevox.agents import AgentContext, LLMAgent
 from edgevox.examples.agents.framework import AgentApp
 from edgevox.integrations.chess import (
     BoardStateInjectionHook,
@@ -223,8 +225,8 @@ def _pre_run(args: argparse.Namespace) -> None:
 
     # Console board re-render on every state change. Only in text-mode /
     # simple-ui — the full Textual TUI owns its terminal and would clash
-    # with raw rich prints. (A future Textual ``ChessPanel`` will subscribe
-    # the same way from inside the TUI's own render loop.)
+    # with raw rich prints. The TUI's own ``ChessPanel`` subscribes
+    # through ``EdgeVoxApp._maybe_build_chess_panel``.
     if getattr(args, "text_mode", False) or getattr(args, "simple_ui", False):
         _console = Console()
         APP.deps.subscribe(lambda state: _console.print(render_board_rich(state)))
@@ -232,17 +234,18 @@ def _pre_run(args: argparse.Namespace) -> None:
         # rather than only after the first move.
         _console.print(render_board_rich(APP.deps.snapshot()))
 
-    # Persona → system prompt + engine backed earlier. The AgentApp was
-    # constructed with a placeholder; swap in the real instructions now
-    # so the banner and LLMAgent both use the selected persona.
+    # Persona → system prompt + greeting. The default LLMAgent constructed
+    # by :class:`AgentApp.__post_init__` already carries the persona-shaped
+    # instructions + tools + hooks we declared at module scope — no need to
+    # rebuild it here. We only swap the display-level fields so the banner
+    # reflects the chosen persona.
     APP.instructions = persona.system_prompt
     APP.greeting = (
         f"{persona.display_name} ready. I'm playing {APP.deps.engine_plays}; you have {APP.deps.user_plays}. Your move."
     )
     APP.name = f"Chess — {persona.display_name}"
-
-    from edgevox.agents import LLMAgent
-
+    # Rebuild the LLMAgent so its ``instructions`` match the selected
+    # persona (the placeholder one was built at import time).
     APP.agent = LLMAgent(
         name=APP.name,
         description="Voice-controlled chess partner.",
@@ -257,6 +260,7 @@ APP = AgentApp(
     description="Voice-controlled chess with pluggable engines (Stockfish / Maia) and personas.",
     instructions="You are a chess partner.",  # replaced in _pre_run
     tools=CHESS_TOOLS,
+    hooks=[BoardStateInjectionHook(), MoveCommentaryHook()],
     deps=None,  # filled in by _pre_run
     stop_words=("stop", "halt", "freeze", "abort", "resign"),
     greeting="Setting up the chess board…",
@@ -306,6 +310,52 @@ APP = AgentApp(
     ],
     pre_run=_pre_run,
 )
+
+
+def build_server_agent(core) -> tuple[LLMAgent, ChessEnvironment]:
+    """Factory for ``edgevox-serve --agent edgevox.examples.agents.chess_partner:build_server_agent``.
+
+    Builds a chess agent + environment for the WebSocket server using
+    environment variables for configuration (same knobs as the CLI):
+
+    - ``EDGEVOX_CHESS_PERSONA`` — one of ``grandmaster`` / ``casual`` / ``trash_talker``
+      (default: ``casual``).
+    - ``EDGEVOX_CHESS_ENGINE`` — ``stockfish`` (default) or ``maia``.
+    - ``EDGEVOX_CHESS_USER_PLAYS`` — ``white`` (default) or ``black``.
+    - ``EDGEVOX_CHESS_STOCKFISH_SKILL`` — 0-20.
+    - ``EDGEVOX_CHESS_MAIA_WEIGHTS`` — path, required when engine=maia.
+
+    The returned ``LLMAgent`` is unbound; ``edgevox-serve`` binds its LLM
+    to :class:`ServerCore.llm` before accepting connections.
+    """
+    import os
+
+    persona_slug = os.environ.get("EDGEVOX_CHESS_PERSONA", "casual")
+    engine_kind = os.environ.get("EDGEVOX_CHESS_ENGINE")
+    user_plays = os.environ.get("EDGEVOX_CHESS_USER_PLAYS", "white")
+
+    persona = resolve_persona(persona_slug)
+    engine_kind = engine_kind or persona.engine_kind
+    engine_kwargs: dict[str, Any] = dict(persona.engine_options) if engine_kind == persona.engine_kind else {}
+    if skill := os.environ.get("EDGEVOX_CHESS_STOCKFISH_SKILL"):
+        engine_kwargs["skill"] = int(skill)
+    if engine_kind == "maia":
+        weights = os.environ.get("EDGEVOX_CHESS_MAIA_WEIGHTS")
+        if not weights:
+            raise EngineUnavailable("EDGEVOX_CHESS_MAIA_WEIGHTS env var required for maia backend")
+        engine_kwargs["weights"] = weights
+
+    engine = build_engine(engine_kind, **engine_kwargs)
+    env = ChessEnvironment(engine, user_plays=user_plays)
+    agent = LLMAgent(
+        name=f"Chess — {persona.display_name}",
+        description="Voice-controlled chess partner.",
+        instructions=persona.system_prompt,
+        tools=CHESS_TOOLS,
+        hooks=[BoardStateInjectionHook(), MoveCommentaryHook()],
+    )
+    del core  # explicit: factory doesn't need the core reference today
+    return agent, env
 
 
 def main(argv: list[str] | None = None) -> None:

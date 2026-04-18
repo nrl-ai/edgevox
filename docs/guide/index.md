@@ -45,4 +45,7 @@ Agent code is sim-agnostic: the same Python works on `ToyWorld` (stdlib), `IrSim
 - [Quick Start](/guide/quickstart) — install and run in 5 minutes
 - [Agents & Tools](/guide/agents) — full agent framework reference
 - [Architecture](/guide/architecture) — deep dive into the streaming pipeline
+- [Pipeline](/guide/pipeline) — agent path vs legacy streaming path
+- [Chess Partner](/guide/chess) — voice-controlled chess with pluggable engines
+- [Desktop App](/guide/desktop) — ship EdgeVox as a Tauri native app
 - [Languages](/guide/languages) — all supported languages and backends

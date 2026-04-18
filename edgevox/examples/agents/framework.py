@@ -35,6 +35,7 @@ from edgevox.agents import (
     Agent,
     AgentContext,
     AgentEvent,
+    Hook,
     LLMAgent,
     Session,
     Skill,
@@ -45,6 +46,7 @@ from edgevox.llm.llamacpp import DEFAULT_HF_FILE, DEFAULT_HF_REPO
 ToolCallback = Callable[[ToolCallResult], None]
 ToolsArg = Iterable[Callable[..., object] | Tool] | ToolRegistry
 SkillsArg = Iterable[Skill]
+HooksArg = Iterable[Hook]
 
 DEFAULT_PERSONA = "You are an EdgeVox voice assistant. Keep responses concise and conversational — 1-3 sentences."
 
@@ -135,6 +137,7 @@ class AgentApp:
     agent: Agent | None = None
     tools: ToolsArg | None = None
     skills: SkillsArg | None = None
+    hooks: HooksArg | None = None
     instructions: str | None = None
     deps: Any = None
     stop_words: tuple[str, ...] | None = None
@@ -155,6 +158,7 @@ class AgentApp:
                 instructions=self.instructions or DEFAULT_PERSONA,
                 tools=self.tools,
                 skills=self.skills,
+                hooks=self.hooks,
             )
 
     def _build_parser(self) -> argparse.ArgumentParser:

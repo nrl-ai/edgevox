@@ -152,7 +152,7 @@ class TestEnergyBargeInWatcher:
     def test_triggers_when_user_speaks_above_echo_floor(self):
         """Realistic flow: TTS prefix calibrates the echo floor (quiet
         ambient mic), then the user starts talking loudly enough to
-        clear ``echo_suppression_ratio × floor``."""
+        clear ``echo_suppression_ratio x floor``."""
         ic = InterruptController()
         watcher = EnergyBargeInWatcher(ic, is_tts_playing=lambda: True, frame_ms=100)
 
@@ -160,7 +160,7 @@ class TestEnergyBargeInWatcher:
         # these to set echo_floor.
         prefix = [[0.02] * 160] * 2
         # User speech: 300 ms of clearly louder audio (well above
-        # echo_floor × 2.0).
+        # echo_floor x 2.0).
         speech = [[0.5] * 160] * 4
         watcher.run(iter(prefix + speech))
         assert ic.should_stop()
@@ -205,7 +205,7 @@ class TestEnergyBargeInWatcher:
             frame_ms=100,
             tts_energy_provider=lambda: 0.4,
         )
-        # Even after prefix, mic (0.4) < tts_rms (0.4) × 2.0 = 0.8.
+        # Even after prefix, mic (0.4) < tts_rms (0.4) x 2.0 = 0.8.
         prefix = [[0.02] * 160] * 2
         speech = [[0.4] * 160] * 4
         watcher.run(iter(prefix + speech))

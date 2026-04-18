@@ -68,7 +68,7 @@ class InterruptPolicy:
     **Echo mitigation** (when TTS audio leaks into the mic without AEC):
 
     - ``echo_suppression_ratio`` — when echo reference is available,
-      mic energy must exceed ``ratio × echo_reference`` to count as
+      mic energy must exceed ``ratio x echo_reference`` to count as
       user speech. Default 2.0 = "speak twice as loud as the bot".
     - ``echo_floor_window_ms`` — at the *start* of TTS playback (before
       the user could realistically have started barging in) we observe
@@ -267,7 +267,7 @@ class EnergyBargeInWatcher:
     1. **Reference signal** (best). Pass ``tts_energy_provider`` — a
        callable that returns the *current* TTS output RMS observed by
        the player. The watcher requires
-       ``mic_rms >= echo_suppression_ratio × tts_rms`` before counting
+       ``mic_rms >= echo_suppression_ratio x tts_rms`` before counting
        a frame toward the sustained-speech timer. Wire it as e.g.
        ``tts_energy_provider=lambda: player.last_output_rms`` once
        :class:`InterruptiblePlayer` exposes that.

@@ -56,11 +56,15 @@ Tunable thresholds. Defaults reflect typical robot voice UX:
 ```python
 @dataclass
 class InterruptPolicy:
-    min_duration_ms: int = 300        # sustained speech energy before trigger
-    energy_threshold: float = 0.02    # normalized float32 RMS
-    cancel_llm: bool = True           # set cancel_token on trigger
-    cancel_skills: bool = False       # preserve mid-grasp skills through brief "um"s
-    cut_tts_immediately: bool = True  # drop in-flight TTS sentence
+    min_duration_ms: int = 250          # sustained speech energy before trigger
+    energy_threshold: float = 0.012     # normalized float32 RMS (-38 dBFS)
+    cancel_llm: bool = True             # set cancel_token on trigger
+    cancel_skills: bool = False         # preserve mid-grasp skills through brief "um"s
+    cut_tts_immediately: bool = True    # drop in-flight TTS sentence
+    # Echo-aware (used by EnergyBargeInWatcher when no AEC is in front):
+    echo_suppression_ratio: float = 2.0  # mic must be N x louder than ref
+    echo_floor_window_ms: int = 200      # prefix window for floor calibration
+    tts_release_ms: int = 200            # refractory after TTS stops
 ```
 
 `cancel_skills=False` is deliberate: interrupting a Panda mid-grasp because the user said "uh" is worse than letting the grasp finish. Opt in only when the skill surface is short (<200 ms).
@@ -109,7 +113,7 @@ Skill dispatch polls `ctx.should_stop()` every 50 ms and calls `handle.cancel()`
 EdgeVox enables echo cancellation by default so barge-in works out of the box on typical USB-mic + laptop-speaker setups. The chain:
 
 1. **`AEC = specsub`** (frequency-domain spectral subtraction, pure numpy, no extra deps). Set by both `edgevox-cli --aec ...` and the TUI. Pass `--aec none` to opt out.
-2. **Energy-ratio gate** in `AudioRecorder._process_loop`. Even after AEC, the mic must clearly dominate the speaker reference (`mic_rms ≥ 3 × player.last_output_rms`) for VAD to be trusted. This is the defense against "AEC residual fools VAD" — the most common failure mode without it.
+2. **Energy-ratio gate** in `AudioRecorder._process_loop`. Even after AEC, the mic must clearly dominate the speaker reference (`mic_rms ≥ 3 x player.last_output_rms`) for VAD to be trusted. This is the defense against "AEC residual fools VAD" — the most common failure mode without it.
 3. **VAD on cleaned audio** (Silero, run on the AEC-cleaned chunk).
 4. **Sustained-speech window** (`INTERRUPT_SPEECH_FRAMES = 8`, ~256 ms) to suppress one-off noise (door slam, cough).
 5. **Echo cooldown** (`ECHO_COOLDOWN_SECS = 1.5`) after TTS stops, so the mic isn't trusted while reverb / AEC tail dies down.
@@ -134,12 +138,13 @@ If real user speech is **not triggering**:
 
 ## Repeatable interrupts
 
-Back-to-back barge-ins must re-arm cleanly even when the consumer (TUI / VoiceBot) hasn't finished tearing down the previous turn. Two mechanisms keep this working:
+Back-to-back barge-ins must re-arm cleanly without depending on the consumer (TUI / VoiceBot) calling `force_resume`. The recorder owns the post-interrupt re-arm itself:
 
-- **Synchronous post-interrupt re-arm**. After `_on_interrupt` fires, the recorder immediately bumps `_suppress_gen` and clears `_suppressed = False`. The captured user-speech buffer flushes into the next chunk's VAD pass without waiting for the consumer's `force_resume(delay=0.1)`.
-- **Generation-counter cooldown invalidation**. `play()` schedules a 1.5 s `resume_after_cooldown`; `force_resume` schedules a 0.1 s reset; the synchronous re-arm above. All three check `_suppress_gen` against the value captured at scheduling, so whichever runs first wins and the others no-op cleanly.
+- **`resume_after_interrupt(delay=0.15)`** — fired automatically by `_process_loop` the moment `_on_interrupt` returns. After 150 ms (long enough for PortAudio's output ring + room reverb to die down) it sets `_suppressed = False` and `_interrupt_detect = False`, freeing the recorder to flush the captured user speech into the next STT pass.
+- **Critical difference vs `force_resume`** — `resume_after_interrupt` does **not** drain the audio queue. After a barge-in the user is typically still talking; draining would lose those samples and force them to re-speak. `force_resume` (used after a normal turn finishes) still drains because the queue holds nothing but echo at that point.
+- **Generation-counter invalidation** — every state-clear path (`play()`'s 1.5 s `resume_after_cooldown`, `force_resume`, `resume_after_interrupt`) bumps `_suppress_gen` and checks it before applying. Whichever fires first wins; the others no-op cleanly.
 
-The old behaviour — `force_resume(delay=0.3)` was the only re-arm path, and the captured user speech could be lost if its silence-detection window crossed the cooldown — has been removed. The 0.3 s default in `force_resume` is now 0.1 s and serves only as defense in depth on the post-turn happy path.
+This is what stopped the "interrupt only works once" failure mode where the recorder got stuck in `_suppressed=True` between Turn 1's interrupt and Turn 2's expected barge-in.
 
 ## VAD backends
 

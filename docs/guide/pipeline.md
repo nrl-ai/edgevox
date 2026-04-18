@@ -2,20 +2,55 @@
 
 Deep dive into EdgeVox's streaming voice pipeline.
 
+## Two Runtime Paths
+
+Every turn goes through one of two paths, chosen per-mode:
+
+1. **Agent path** — `LLMAgent.run(task, ctx)` drives the turn. Full harness:
+   hooks, tool calls, handoffs, cancellable skills, `ctx.deps`, the event
+   bus. This is the default in the TUI, simple-voice, text-mode, and the
+   WebSocket server when `ServerCore.agent` is bound (via
+   `edgevox-serve --agent module:factory`). See
+   [agent-loop](/guide/agent-loop) for the full lifecycle.
+2. **Legacy streaming path** — `LLM.chat_stream` yields tokens which
+   `stream_sentences` splits into TTS chunks. Lower first-TTS latency
+   on long replies but no hooks, no tools, no events. Used by the
+   server when no agent is bound (the stock `edgevox-serve` path).
+
+Every example ships the agent path because one code path + one event
+bus is easier to reason about than two.
+
 ## Sentence-Level Streaming
 
 The core insight: **don't wait for the full LLM response before speaking**.
 
-```python
-token_stream = llm.chat_stream(text)        # yields tokens
-sentence_stream = stream_sentences(token_stream)  # yields sentences
+On the agent path, the reply is split into sentences *after* generation (the
+reply is wrapped as a single-element iterator fed into `stream_sentences`):
 
-for sentence in sentence_stream:
+```python
+result = agent.run(text, ctx)           # full reply
+for sentence in stream_sentences(iter([result.reply])):
     audio = tts.synthesize(sentence)    # TTS one sentence
-    play_audio(audio)                   # play while LLM continues
+    play_audio(audio)                   # play while next sentence renders
 ```
 
-The `stream_sentences()` function buffers tokens and splits on sentence boundaries (`[.!?]\s+`). Each sentence is sent to TTS immediately.
+On the legacy streaming path, sentences are produced *during* generation:
+
+```python
+token_stream = llm.chat_stream(text)          # yields tokens
+for sentence in stream_sentences(token_stream):
+    audio = tts.synthesize(sentence)
+    play_audio(audio)
+```
+
+The `stream_sentences()` function buffers tokens and splits on sentence
+boundaries (`[.!?]\s+`). Each sentence is sent to TTS immediately.
+
+**Latency note**: the agent path adds ~the full LLM decode time to first-TTS
+latency because sentence splitting happens post-hoc. On short replies (the
+common case for voice) this is imperceptible. For long explanatory replies
+the difference is ~0.5-1s; future work is to thread token streaming through
+`LLMAgent.run_stream` and keep the split-during-decode behaviour.
 
 ## VAD Configuration
 

@@ -606,11 +606,12 @@ class AudioRecorder:
         deaf during the full cooldown window. A brief delay (default 100 ms)
         lets residual echo from the speakers die down.
 
-        After PR-fix-2026-04-18 the recorder *also* exits suppression
-        immediately when ``_on_interrupt`` fires (so back-to-back
-        barge-ins re-arm cleanly without waiting on the consumer's
-        ``force_resume`` discipline). This call remains the post-turn
-        path for non-interrupt completions.
+        Drains the queued audio because, after a *normal* turn, the
+        bot's tail audio captured during playback is just echo we want
+        to throw away. After a *barge-in*, use
+        :meth:`resume_after_interrupt` instead — same generation-counter
+        protection, but the audio queue is preserved so the user's
+        continuing speech lands in the next STT pass.
         """
         self._suppress_gen += 1  # invalidate any pending cooldown timers
         gen = self._suppress_gen
@@ -630,6 +631,33 @@ class AudioRecorder:
             self._interrupt_speech_count = 0
             self._suppressed = False
             log.debug("Mic force-resumed after %.2fs (gen=%d)", delay, gen)
+
+        threading.Thread(target=_resume, daemon=True).start()
+
+    def resume_after_interrupt(self, delay: float = 0.15):
+        """Re-arm the mic after a barge-in WITHOUT draining the audio queue.
+
+        Critical difference vs :meth:`force_resume`: the audio queued
+        during the brief delay is *kept*. After a user barge-in the user
+        is typically still talking; draining the queue would lose those
+        samples and force the user to re-speak. The delay is just long
+        enough (~150 ms) for PortAudio's output ring + room reverb to
+        die down so the bot's tail audio doesn't fire a phantom user
+        turn the moment we re-enter speech detection.
+        """
+        self._suppress_gen += 1
+        gen = self._suppress_gen
+
+        def _resume():
+            if delay > 0:
+                time.sleep(delay)
+            if self._suppress_gen != gen:
+                return
+            self._vad.reset()
+            self._interrupt_detect = False
+            self._interrupt_speech_count = 0
+            self._suppressed = False
+            log.debug("Mic resumed after barge-in (delay=%.2fs, gen=%d)", delay, gen)
 
         threading.Thread(target=_resume, daemon=True).start()
 
@@ -712,19 +740,20 @@ class AudioRecorder:
                         self._interrupt_detect = False
                         self._interrupt_speech_count = 0
                         self._on_interrupt()
-                        # Immediately exit suppression so the captured
-                        # user speech flushes into the next turn's STT
-                        # path on the very next chunk — don't wait on
-                        # the consumer's ``force_resume(delay=0.1)``.
-                        # Bumping ``_suppress_gen`` invalidates any
-                        # pending cooldown timer from the previous
-                        # play() call. Without this the second barge-in
-                        # in a session can be lost while the recorder
-                        # sits in ``_suppressed=True`` between Turn 1
-                        # and Turn 2.
-                        self._suppress_gen += 1
-                        self._suppressed = False
-                        self._vad.reset()
+                        # Self-schedule a short-delay resume so the
+                        # capture buffer flushes into Turn 2's STT
+                        # without depending on the consumer calling
+                        # force_resume() — the consumer's discipline
+                        # was the source of the "interrupt only once"
+                        # bug. The 150 ms delay absorbs the PortAudio
+                        # output ring + room reverb so the bot's tail
+                        # audio doesn't fire a phantom turn.
+                        # ``resume_after_interrupt`` preserves the
+                        # queued mic audio (the user is typically
+                        # still talking) instead of draining it the
+                        # way ``force_resume`` does after a normal
+                        # turn.
+                        self.resume_after_interrupt(delay=0.15)
                 else:
                     self._interrupt_speech_count = 0
                     # Trim the rolling speech buffer so a single false
