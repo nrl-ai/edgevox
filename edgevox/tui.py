@@ -1154,6 +1154,13 @@ class EdgeVoxApp(App):
     def on_mount(self) -> None:
         self._show_splash()
         self._load_models()
+        # Drive the sim's main-thread render pump (e.g. MuJoCo viewer.sync,
+        # IR-SIM matplotlib) so the GUI reflects physics that runs on the
+        # sim's background thread. Without this, launch_passive's window
+        # shows a frozen initial frame while the arm actually moves.
+        pump = getattr(self._deps, "pump_render", None) or getattr(self._deps, "pump_events", None)
+        if callable(pump):
+            self.set_interval(1 / 30, pump)
 
     def _show_splash(self) -> None:
         chat = self.query_one("#chat-panel", RichLog)
@@ -1489,10 +1496,10 @@ class EdgeVoxApp(App):
                     )
                     if self._bridge:
                         self._bridge.publish_transcription(frame.text)
-                self.call_from_thread(setattr, status, "state", BotState.THINKING)
-                if self._bridge:
-                    self._bridge.publish_state("thinking")
-                self.call_from_thread(chat.write, Text("  \u2026 thinking", style="dim italic #c084fc"))
+                    self.call_from_thread(setattr, status, "state", BotState.THINKING)
+                    if self._bridge:
+                        self._bridge.publish_state("thinking")
+                    self.call_from_thread(chat.write, Text("  \u2026 thinking", style="dim italic #c084fc"))
 
             elif isinstance(frame, TextFrame):
                 if self._bridge:
