@@ -54,8 +54,18 @@ concurrency:
 jobs:
   # Expands the matrix conditionally: everyday pushes / PRs get the
   # Linux leg only (cheap), while tagged releases and manual dispatch
-  # fan out to the full four-OS matrix. We build the matrix in a
+  # fan out to the full release matrix. We build the matrix in a
   # preceding job so the dependency is explicit in the job graph.
+  #
+  # macOS Intel (``macos-13``) was removed after 2025-12-08 when the
+  # image was retired from GitHub-hosted runners. Apple has also
+  # dropped x86_64 support across its own toolchain, so we ship an
+  # arm64-only macOS build. Users on Intel Macs can still ``pip
+  # install`` the Python package and run ``edgevox-chess-robot``
+  # directly; a prebuilt Intel bundle is no longer viable on GitHub
+  # Actions. (``macos-15-intel`` / ``macos-*-large`` exist but consume
+  # a premium minute allotment we don't want to spend for a shrinking
+  # audience.)
   matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -65,7 +75,7 @@ jobs:
         shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/rook-v* || "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            echo 'include=[{"name":"macos-arm","runner":"macos-14"},{"name":"macos-intel","runner":"macos-13"},{"name":"windows","runner":"windows-latest"},{"name":"linux","runner":"ubuntu-22.04"}]' >> "$GITHUB_OUTPUT"
+            echo 'include=[{"name":"macos-arm","runner":"macos-14"},{"name":"windows","runner":"windows-latest"},{"name":"linux","runner":"ubuntu-22.04"}]' >> "$GITHUB_OUTPUT"
           else
             echo 'include=[{"name":"linux","runner":"ubuntu-22.04"}]' >> "$GITHUB_OUTPUT"
           fi
