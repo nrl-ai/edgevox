@@ -9,21 +9,21 @@
 <table>
   <tr>
     <td align="center" width="50%">
-      <a href="docs/public/screenshot.png"><img src="docs/public/screenshot.png" alt="EdgeVox TUI — streaming voice pipeline"/></a>
+      <a href="https://raw.githubusercontent.com/vietanhdev/edgevox/main/docs/public/screenshot.png"><img src="https://raw.githubusercontent.com/vietanhdev/edgevox/main/docs/public/screenshot.png" alt="EdgeVox TUI — streaming voice pipeline"/></a>
       <br/><sub><b>Voice pipeline TUI</b> — streaming STT · LLM · TTS with VAD barge-in</sub>
     </td>
     <td align="center" width="50%">
-      <a href="docs/public/robot_panda.png"><img src="docs/public/robot_panda.png" alt="MuJoCo Franka Panda pick-and-place"/></a>
+      <a href="https://raw.githubusercontent.com/vietanhdev/edgevox/main/docs/public/robot_panda.png"><img src="https://raw.githubusercontent.com/vietanhdev/edgevox/main/docs/public/robot_panda.png" alt="MuJoCo Franka Panda pick-and-place"/></a>
       <br/><sub><b>MuJoCo · Franka arm</b> — voice-controlled pick-and-place</sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
-      <a href="docs/public/robot_unitree_g1.png"><img src="docs/public/robot_unitree_g1.png" alt="Unitree G1 humanoid"/></a>
+      <a href="https://raw.githubusercontent.com/vietanhdev/edgevox/main/docs/public/robot_unitree_g1.png"><img src="https://raw.githubusercontent.com/vietanhdev/edgevox/main/docs/public/robot_unitree_g1.png" alt="Unitree G1 humanoid"/></a>
       <br/><sub><b>Unitree G1 humanoid</b> — procedural gait + ONNX policy slot</sub>
     </td>
     <td align="center" width="50%">
-      <a href="docs/public/rook_app.png"><img src="docs/public/rook_app.png" alt="RookApp — PySide6 desktop chess robot"/></a>
+      <a href="https://raw.githubusercontent.com/vietanhdev/edgevox/main/docs/public/rook_app.png"><img src="https://raw.githubusercontent.com/vietanhdev/edgevox/main/docs/public/rook_app.png" alt="RookApp — PySide6 desktop chess robot"/></a>
       <br/><sub><b>RookApp desktop</b> — offline chess partner (Qt + LLMAgent + Stockfish, one Python process)</sub>
     </td>
   </tr>
