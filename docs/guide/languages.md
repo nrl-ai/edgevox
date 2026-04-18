@@ -1,6 +1,6 @@
 # Languages
 
-EdgeVox supports 15 languages with automatic STT/TTS backend selection.
+EdgeVox supports 16 languages with automatic STT/TTS backend selection.
 
 ## Kokoro Languages (Near-Commercial Quality)
 

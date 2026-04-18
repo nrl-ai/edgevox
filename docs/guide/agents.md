@@ -398,9 +398,11 @@ Workflows compose agents. Every workflow implements the `Agent` protocol so nest
 | `Fallback` | Try each until one returns non-empty | "Try the fast path, fall back to human" |
 | `Loop` | Run one agent until `until(state)` is true | "Keep asking the planner" |
 | `Parallel` | Run N agents concurrently; reduce replies | Fan-out queries on distinct specialists |
-| `Retry` | Re-run the wrapped agent on failure | Flaky network/hardware tools |
+| `Retry` | Re-run the wrapped agent on failure | Flaky network / hardware tools |
 | `Timeout` | Wall-clock deadline, sets `ctx.stop` on expiry | Bounded workflows |
 | `Router.build()` | Single LLM routing call to one of N specialists via handoff | Multi-agent dispatch |
+| `Supervisor.build()` | Same wire-shape as `Router` but forces `required_first_hop` — every turn must dispatch to a worker | "Every message goes to a worker, no chit-chat fallback" |
+| `Orchestrator` | Lead LLM emits a JSON plan; `spawn_subagent` runs each subtask with scoped tools; lead synthesises | Anthropic-style plan → fan-out → synthesise |
 
 ### Router + handoff — the voice-optimized multi-agent pattern
 
