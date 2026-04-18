@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QFrame,
@@ -80,6 +80,14 @@ class ChatView(QScrollArea):
     def add_rook(self, text: str) -> None:
         self._add(_Bubble("rook", text, self._accent))
 
+    def add_debug(self, title: str, body: str) -> None:
+        """Render a debug dump as a collapsible monospace bubble.
+
+        Bodies are often multi-kB (full messages array) — capped to a
+        reasonable preview with a click-to-expand control so normal
+        scrolling stays usable."""
+        self._add(_DebugEntry(title, body))
+
     def add_move_chip(self, who: str, san: str) -> None:
         """``who`` is ``'you'`` or ``'rook'`` — compact chip in the middle."""
         self._add(_MoveChip(who, san, self._accent))
@@ -138,11 +146,17 @@ class ChatView(QScrollArea):
 class _Bubble(QWidget):
     """One chat bubble (user or rook)."""
 
+    # Stylesheet padding on ``_bubble_style`` — kept in sync with the
+    # style strings below so ``_fit`` sizes the label correctly.
+    _PAD_H = 18  # 9 top + 9 bottom
+    _PAD_W = 26  # 13 left + 13 right
+    _MAX_CONTENT_W = 420
+
     def __init__(self, role: str, text: str, accent: QColor, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._role = role
         self._accent = accent
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
 
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
@@ -152,13 +166,38 @@ class _Bubble(QWidget):
         label_label.setStyleSheet(self._label_style(self._accent if role == "rook" else QColor("#9aa7b9")))
         col.addWidget(label_label, alignment=self._align())
 
+        # QLabel + ``wordWrap=True`` reports a single-word sizeHint when
+        # used with ``addWidget(alignment=…)``; the layout then allocates
+        # only that width and the text wraps to the minimum feasible
+        # rectangle (first line visible, rest clipped). Instead of
+        # fighting sizeHint, we measure the text with QFontMetrics and
+        # set a concrete fixed size ourselves — cheap, deterministic,
+        # and avoids the heightForWidth propagation pitfalls.
         self._body = QLabel(text)
         self._body.setWordWrap(True)
         self._body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._body.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        self._body.setMaximumWidth(420)
         self._body.setStyleSheet(self._bubble_style(role, accent))
+        self._body.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._fit(text)
         col.addWidget(self._body, alignment=self._align())
+
+    def _fit(self, text: str) -> None:
+        """Size the body label to exactly fit its wrapped text."""
+        fm = self._body.fontMetrics()
+        max_w = self._MAX_CONTENT_W - self._PAD_W
+        natural_w = fm.horizontalAdvance(text)
+        if natural_w <= max_w:
+            width = natural_w
+            height = fm.height()
+        else:
+            rect = fm.boundingRect(
+                QRect(0, 0, max_w, 10_000_000),
+                int(Qt.TextFlag.TextWordWrap) | int(Qt.AlignmentFlag.AlignLeft),
+                text,
+            )
+            width = max_w
+            height = rect.height()
+        self._body.setFixedSize(width + self._PAD_W, height + self._PAD_H)
 
     def update_accent(self, accent: QColor) -> None:
         self._accent = accent
@@ -176,16 +215,14 @@ class _Bubble(QWidget):
     def _bubble_style(role: str, accent: QColor) -> str:
         if role == "user":
             return (
-                "background: rgba(52, 211, 153, 0.14); "
-                "border: 1px solid rgba(52, 211, 153, 0.28); "
-                "color: #dbe4ef; padding: 7px 11px; border-radius: 10px; "
+                "background: rgba(52, 211, 153, 0.16); "
+                "color: #dbe4ef; padding: 9px 13px; border-radius: 14px; "
                 "font-size: 13px;"
             )
         r, g, b = accent.red(), accent.green(), accent.blue()
         return (
-            f"background: rgba({r}, {g}, {b}, 0.08); "
-            f"border: 1px solid rgba({r}, {g}, {b}, 0.4); "
-            "color: #dbe4ef; padding: 7px 11px; border-radius: 10px; "
+            f"background: rgba({r}, {g}, {b}, 0.12); "
+            "color: #dbe4ef; padding: 9px 13px; border-radius: 14px; "
             "font-size: 13px;"
         )
 
@@ -207,11 +244,75 @@ class _MoveChip(QWidget):
         bg = f"rgba({r}, {g}, {b}, 0.1)" if who == "rook" else "rgba(52, 211, 153, 0.14)"
         label.setStyleSheet(
             f"color: {accent_str}; background: {bg}; "
-            f"padding: 3px 10px; border-radius: 9px; border: 1px solid {accent_str}40; "
+            "padding: 4px 12px; border-radius: 10px; "
             "font-family: monospace; font-size: 11px;"
         )
         row.addWidget(label)
         row.addStretch(1)
+
+
+class _DebugEntry(QWidget):
+    """Debug dump: monospace, full-width, expandable.
+
+    Collapsed by default so a long messages array doesn't push the
+    conversation off-screen. Click the header to expand. The body
+    uses a plain QLabel (not QTextEdit) because we only need
+    selectable text, not editing — cheaper and avoids the scroll
+    nesting that QTextEdit forces inside a QScrollArea.
+    """
+
+    _PREVIEW_CHARS = 400
+
+    def __init__(self, title: str, body: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._body_text = body
+        self._expanded = False
+
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+
+        self._header = QLabel(self._header_text(title, collapsed=True))
+        self._header.setStyleSheet(
+            "color: #ffb86c; background: rgba(255, 184, 108, 0.08); "
+            "border-left: 2px solid #ffb86c; "
+            "padding: 4px 8px; font-family: monospace; font-size: 10px; "
+            "letter-spacing: 0.5px;"
+        )
+        self._header.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Click → toggle. QLabel has no clicked signal; intercept via
+        # mousePressEvent through a lambda on an internal flag.
+        self._header.mousePressEvent = self._on_header_click  # type: ignore[assignment]
+        col.addWidget(self._header)
+
+        self._body = QLabel(self._render_body(expanded=False))
+        self._body.setWordWrap(True)
+        self._body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._body.setStyleSheet(
+            "color: #9aa7b9; background: rgba(10, 14, 22, 0.7); "
+            "padding: 8px 12px; border-radius: 6px; "
+            "font-family: monospace; font-size: 11px;"
+        )
+        self._body.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        col.addWidget(self._body)
+
+        self._title = title
+
+    def _header_text(self, title: str, *, collapsed: bool) -> str:
+        arrow = "▸" if collapsed else "▾"
+        hint = "click to expand" if collapsed else "click to collapse"
+        size = len(self._body_text)
+        return f"{arrow} DEBUG · {title} · {size} chars · {hint}"
+
+    def _render_body(self, *, expanded: bool) -> str:
+        if expanded or len(self._body_text) <= self._PREVIEW_CHARS:
+            return self._body_text
+        return self._body_text[: self._PREVIEW_CHARS] + "\n… (click header to expand) …"
+
+    def _on_header_click(self, _event) -> None:
+        self._expanded = not self._expanded
+        self._header.setText(self._header_text(self._title, collapsed=not self._expanded))
+        self._body.setText(self._render_body(expanded=self._expanded))
 
 
 __all__ = ["ChatEntry", "ChatView"]

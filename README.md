@@ -12,6 +12,8 @@
 
 ![Unitree G1 Humanoid](docs/public/robot_unitree_g1.png)
 
+![RookApp — PySide6 desktop chess robot](docs/public/rook_app.png)
+
 ---
 
 **Agents + Skills + Workflows** &nbsp;|&nbsp; **2D sim (IR-SIM)** &nbsp;|&nbsp; **3D sim (MuJoCo)** &nbsp;|&nbsp; **0.8s voice TTFT** &nbsp;|&nbsp; **15 languages** &nbsp;|&nbsp; **56 voices** &nbsp;|&nbsp; **ROS2-native**
@@ -178,6 +180,30 @@ The five built-in agents are subcommands of `edgevox-agent`:
 | `edgevox-agent robot-external` | Drive any external ROS2 robot (Gazebo, Isaac, real hardware) |
 
 Each one supports `--text-mode`, `--simple-ui`, or (default) full TUI. Any of them composes with `--ros2` to attach the full ROS2 bridge + Nav2 / TF2 / sensor adapter + `execute_skill` action server.
+
+## RookApp — desktop chess robot
+
+![RookApp screenshot](docs/public/rook_app.png)
+
+Voice-controlled offline chess partner built on EdgeVox — a PySide6 desktop app that runs the Qt UI, the `LLMAgent`, llama-cpp (Llama-3.2-1B Q4_K_M), and Stockfish all in one Python process. No browser, no web server, no Node toolchain. Three personas (`casual`, `grandmaster`, `trash_talker`), six board themes, three piece sets, Kokoro TTS, Whisper STT with barge-in.
+
+```bash
+# 1. Install the desktop extra (PySide6 + qtawesome + rlottie + pillow)
+uv pip install -e '.[desktop]'
+
+# 2. Stockfish on $PATH (GPL — stays out-of-process, app stays MIT)
+sudo apt-get install -y stockfish          # Linux
+brew install stockfish                     # macOS
+# Windows: https://stockfishchess.org/download/
+
+# 3. Download STT + LLM + TTS models (~3 GB, one time)
+edgevox-setup
+
+# 4. Launch
+edgevox-chess-robot
+```
+
+Flags: `--persona {grandmaster,casual,trash_talker}`, `--user-plays {white,black}`, `--engine {stockfish,maia}`, `--stockfish-skill 0..20`, `--maia-weights PATH`, `-v`. Every flag also reads an `EDGEVOX_CHESS_*` env var. Piece set, board theme, persona, audio devices, and debug-mode settings live in the in-app **☰ → Settings…** dialog. Preferences persist via `QSettings`. Full guide: [`docs/guide/desktop.md`](docs/guide/desktop.md).
 
 ## Simulation tiers
 

@@ -267,6 +267,30 @@ class ChessEnvironment:
             board_copy = self._board.copy(stack=False)
         return self._engine.analyse(board_copy, depth=effective)
 
+    def restore(
+        self,
+        *,
+        fen: str,
+        san_history: list[str] | None = None,
+        last_move_uci: str | None = None,
+        user_plays: str | None = None,
+    ) -> ChessState:
+        """Rehydrate a saved position. No engine analysis is run — eval
+        fields stay ``None`` until the next real move refreshes them.
+        Raises :class:`ValueError` if ``fen`` is malformed; caller should
+        fall back to a fresh board.
+        """
+        with self._lock:
+            if user_plays is not None:
+                self._user_plays = chess.WHITE if user_plays.lower().startswith("w") else chess.BLACK
+            self._board = chess.Board(fen)
+            self._san_history = list(san_history or [])
+            self._last_move = chess.Move.from_uci(last_move_uci) if last_move_uci else None
+            self._last_classification = None
+            self._last_eval = None
+        self._publish()
+        return self.snapshot()
+
     def undo_last_move(self) -> ChessState:
         """Roll back the most recent half-move. Used for "wait, I meant…"
         voice corrections."""

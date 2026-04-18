@@ -21,9 +21,10 @@ from __future__ import annotations
 import logging
 
 import qtawesome as qta
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QMouseEvent
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QRegion
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -57,6 +58,7 @@ _PERSONA_ACCENT = {
     "trash_talker": "#ff5ad1",
 }
 _DEFAULT_ACCENT = "#34d399"
+_TOP_RESIZE_STRIP = 5  # px at the top of the AppBar that resize the window
 
 
 class RookWindow(QMainWindow):
@@ -71,16 +73,32 @@ class RookWindow(QMainWindow):
         if self._settings.persona != bridge.config.persona:
             bridge.config.persona = self._settings.persona
         self._accent = QColor(_PERSONA_ACCENT.get(bridge.config.persona, _DEFAULT_ACCENT))
+        # The engine applies its reply the instant the user plays so the
+        # LLM briefing has full context, but showing that reply on the
+        # board at the same split-second feels robotic — the human just
+        # spoke, Rook should appear to think. We hold the engine-move
+        # reveal (board + history + chat chip) for this long while the
+        # LLM keeps generating in the background.
+        self._engine_reveal_delay_ms = 3500
+        self._pending_engine_state = None
         self.setWindowTitle("RookApp")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.resize(1280, 820)
         self.setMinimumSize(980, 640)
-        self.setStyleSheet("QMainWindow { background: #060a12; } QLabel { color: #dbe4ef; }")
+        self.setStyleSheet("QLabel { color: #dbe4ef; }")
 
-        root = QWidget()
+        # Translucent window + rounded-rect root lets the outer corners
+        # fade to the desktop instead of showing a hard rectangle.
+        root = _RoundedRoot(radius=16, fill=QColor("#060a12"))
         self.setCentralWidget(root)
         col = QVBoxLayout(root)
-        col.setContentsMargins(0, 0, 0, 0)
+        # Inset children by a few pixels so the root's painted rounded
+        # rect peeks through on three sides. The exposed strip doubles
+        # as a resize grip — _RoundedRoot hit-tests clicks there and
+        # delegates to windowHandle().startSystemResize(). The top edge
+        # stays flush because the AppBar owns its own top-resize strip.
+        col.setContentsMargins(5, 0, 5, 5)
         col.setSpacing(0)
 
         # One unified top bar: brand + drag region + status + turn pill
@@ -105,9 +123,7 @@ class RookWindow(QMainWindow):
         left = QVBoxLayout()
         left.setSpacing(6)
         board_frame = QFrame()
-        board_frame.setStyleSheet(
-            "QFrame { background: #0b111a; border: 1px solid #1b2634; border-radius: 10px; padding: 8px; }"
-        )
+        board_frame.setStyleSheet("QFrame { background: #0b111a; border-radius: 14px; padding: 8px; }")
         bf_col = QVBoxLayout(board_frame)
         bf_col.setContentsMargins(10, 10, 10, 10)
         self._board = ChessBoardView()
@@ -128,20 +144,25 @@ class RookWindow(QMainWindow):
         right = QVBoxLayout()
         right.setSpacing(10)
         face_frame = QFrame()
-        face_frame.setStyleSheet("QFrame { background: #0b111a; border: 1px solid #1b2634; border-radius: 10px; }")
+        face_frame.setStyleSheet("QFrame { background: #0b111a; border-radius: 14px; }")
         face_col = QVBoxLayout(face_frame)
-        face_col.setContentsMargins(10, 10, 10, 6)
-        face_col.setSpacing(4)
+        face_col.setContentsMargins(12, 12, 12, 12)
+        face_col.setSpacing(8)
         self._face = LottieFaceWidget() if lottie_available() else RobotFaceWidget()
         self._face.setFixedHeight(220)
         self._face.set_persona(bridge.config.persona)
         face_col.addWidget(self._face, stretch=0)
-        self._persona_label = QLabel(bridge.config.persona.replace("_", " ").title())
+        self._persona_label = QLabel(bridge.config.persona.replace("_", " ").upper())
         self._persona_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._persona_label.setStyleSheet(
-            f"color: {self._accent.name()}; font-family: monospace; font-size: 11px; "
-            "letter-spacing: 2px; text-transform: uppercase;"
-        )
+        # Qt stylesheets don't honour letter-spacing / text-transform; drive
+        # both via QFont and an already-uppercased string.
+        persona_font = self._persona_label.font()
+        persona_font.setFamily("monospace")
+        persona_font.setPointSize(max(8, persona_font.pointSize() - 2))
+        persona_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 140)
+        persona_font.setWeight(QFont.Weight.Medium)
+        self._persona_label.setFont(persona_font)
+        self._persona_label.setStyleSheet(f"color: {self._accent.name()};")
         face_col.addWidget(self._persona_label, stretch=0)
         right.addWidget(face_frame, stretch=0)
 
@@ -175,6 +196,11 @@ class RookWindow(QMainWindow):
         b.error.connect(self._on_error)
         b.ready.connect(self._on_ready)
         b.load_progress.connect(lambda t: self._app_bar.set_status(t))
+        b.debug_event.connect(self._chat.add_debug)
+
+        # Apply the persisted debug flag before the first turn so the
+        # DebugTapHook starts emitting immediately when enabled.
+        bridge.set_debug_mode(self._settings.debug_mode)
 
         # Start the bridge's background load of LLM + engine.
         self._app_bar.set_status("loading…")
@@ -186,7 +212,7 @@ class RookWindow(QMainWindow):
         # Mute means don't even load the model.
         self._tts: TTSWorker | None = None
         if not self._settings.sfx_muted:
-            self._tts = TTSWorker(parent=self)
+            self._tts = TTSWorker(output_device=self._settings.output_device, parent=self)
             self._tts.error.connect(lambda msg: log.warning("TTS: %s", msg))
             self._tts.started.connect(self._on_tts_started)
             self._tts.finished.connect(self._on_tts_finished)
@@ -214,6 +240,33 @@ class RookWindow(QMainWindow):
         self._face.set_tempo(state)
 
     def _on_chess_state(self, state) -> None:
+        engine_just_moved = bool(
+            state.last_move_san
+            and state.turn == self._bridge.config.user_plays
+            and state.ply >= 2
+            and state.ply % 2 == 0
+        )
+        if engine_just_moved:
+            # Hold the reveal. Overwrites any prior pending state so the
+            # most recent engine move always wins if two somehow queue
+            # up, and re-arms the timer from "now" rather than stacking.
+            self._pending_engine_state = state
+            QTimer.singleShot(self._engine_reveal_delay_ms, self._reveal_pending_engine_state)
+            return
+        # Non-engine update (user's own move, reset, undo, game start):
+        # drop any pending reveal so a stale engine state can't clobber
+        # a fresh board after "new game" lands mid-delay.
+        self._pending_engine_state = None
+        self._apply_chess_state(state)
+
+    def _reveal_pending_engine_state(self) -> None:
+        state = self._pending_engine_state
+        if state is None:
+            return
+        self._pending_engine_state = None
+        self._apply_chess_state(state)
+
+    def _apply_chess_state(self, state) -> None:
         self._board.set_state(state)
         # Move-history strip.
         moves = getattr(state, "san_history", []) or []
@@ -242,7 +295,7 @@ class RookWindow(QMainWindow):
         self._face.set_mood(mood)
         self._face.set_tempo(tempo)
         self._face.set_persona(persona)
-        self._persona_label.setText(persona.replace("_", " ").title())
+        self._persona_label.setText(persona.replace("_", " ").upper())
 
     def _on_reply(self, text: str) -> None:
         text = (text or "").strip()
@@ -254,19 +307,25 @@ class RookWindow(QMainWindow):
             self._tts.speak(text)
 
     def _on_tts_started(self) -> None:
-        # While TTS plays we mute mic input so Rook's own voice doesn't
-        # loop back through STT. Keep the UI-level active flag intact
-        # so the mic button visually represents what the user picked.
-        voice = getattr(self, "_voice", None)
-        if voice is not None and getattr(self, "_voice_active", False):
-            voice.set_listening(False)
+        # Echo suppression is automatic: AudioRecorder is linked to the
+        # global InterruptiblePlayer, which pauses the mic queue at the
+        # source and resumes after the cooldown. Any residual echo is
+        # filtered by the RMS-ratio gate while interrupt detection runs.
         self._face.set_tempo("speaking")
 
     def _on_tts_finished(self) -> None:
-        voice = getattr(self, "_voice", None)
-        if voice is not None and getattr(self, "_voice_active", False):
-            voice.set_listening(True)
         self._face.set_tempo("idle")
+
+    def _on_barge_in(self) -> None:
+        """User spoke over Rook. Cut TTS immediately and cancel the
+        in-flight agent turn so the next transcription doesn't compete
+        with a stale reply."""
+        if self._tts is not None:
+            self._tts.interrupt()
+        self._bridge.cancel_turn()
+        self._face.set_tempo("idle")
+        self._app_bar.set_status("you interrupted")
+        QTimer.singleShot(1500, lambda: self._app_bar.set_status("online"))
 
     def _on_user_echo(self, text: str) -> None:
         self._reply_label.setText("")
@@ -289,7 +348,17 @@ class RookWindow(QMainWindow):
         self._bridge.submit_text(uci)
 
     def _on_new_game(self) -> None:
+        # Clear the UI + wipe persisted memory/notes/chat history so
+        # stale commentary from the previous game can't leak into the
+        # new one. Bridge.reset_game() rewinds the board; submit_text
+        # primes Rook to announce the new match.
         self._chat.clear()
+        self._reply_label.setText("")
+        if self._tts is not None:
+            self._tts.interrupt()
+        self._bridge.cancel_turn(reason="new_game")
+        self._bridge.clear_memory()
+        self._bridge.reset_game()
         self._bridge.submit_text("new game")
 
     def _on_mic_clicked(self) -> None:
@@ -300,11 +369,16 @@ class RookWindow(QMainWindow):
             if not self._settings.voice_enabled:
                 self._on_error("Voice is disabled in Settings — enable it there first.")
                 return
-            self._voice = VoiceWorker(language="en", parent=self)
+            self._voice = VoiceWorker(
+                language="en",
+                input_device=self._settings.input_device,
+                parent=self,
+            )
             self._voice.transcript.connect(self._on_voice_transcript)
             self._voice.error.connect(self._on_error)
             self._voice.loading.connect(lambda on: self._app_bar.set_status("warming up mic…" if on else "online"))
             self._voice.ready.connect(lambda: self._voice_enable_listen())
+            self._voice.barge_in.connect(self._on_barge_in)
             self._voice.start()
             self._voice_active = True
             self._app_bar.set_mic_active(True)
@@ -345,11 +419,35 @@ class RookWindow(QMainWindow):
         if new.sfx_muted != self._settings.sfx_muted:
             # SFX are a future hook — flag for later.
             pass
-        # Persona + voice require a restart; show a hint.
-        needs_restart = new.persona != self._settings.persona or new.voice_enabled != self._settings.voice_enabled
+        # Debug mode is purely observational — the tap hook is already
+        # installed, so flipping the flag takes effect on the very next
+        # fire point.
+        if new.debug_mode != self._settings.debug_mode:
+            self._bridge.set_debug_mode(new.debug_mode)
+        # Persona swap — apply the visual + agent-voice parts live; the
+        # engine strength still defers to the next "new game" because
+        # rebuilding the chess engine clobbers the current position.
+        if new.persona != self._settings.persona:
+            self._apply_persona_live(new.persona)
+        # Voice enable still requires the next launch (the VoiceWorker
+        # is created lazily on first mic click but the kill path is
+        # restart-only).
+        voice_changed = new.voice_enabled != self._settings.voice_enabled
         self._settings = new
-        if needs_restart:
-            self._on_error("Persona / voice change applies next launch.")
+        if voice_changed:
+            self._on_error("Voice change applies next launch.")
+
+    def _apply_persona_live(self, slug: str) -> None:
+        """Re-skin the persona-coupled UI surfaces and tell the bridge
+        to swap its agent instructions + face hook in place."""
+        self._bridge.set_persona(slug)
+        self._accent = QColor(_PERSONA_ACCENT.get(slug, _DEFAULT_ACCENT))
+        self._persona_label.setText(slug.replace("_", " ").upper())
+        self._persona_label.setStyleSheet(f"color: {self._accent.name()};")
+        self._face.set_persona(slug)
+        # Push the new accent into widgets that cache it for restyling.
+        self._chat.set_accent(self._accent)
+        self._app_bar.set_accent(self._accent)
 
     # ----- window chrome -----
 
@@ -368,6 +466,11 @@ class RookWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:
+        # Hide the window up-front so the close feels instant — then do
+        # the slow teardown (TTS stop, voice stop, bridge close waits up
+        # to 3 s for an in-flight turn) while no UI is visible.
+        self.hide()
+        QApplication.processEvents()
         if self._tts is not None:
             self._tts.stop()
         voice = getattr(self, "_voice", None)
@@ -376,8 +479,96 @@ class RookWindow(QMainWindow):
         self._bridge.close()
         super().closeEvent(event)
 
+    def resizeEvent(self, event) -> None:
+        # Clip child widgets to the rounded outline so the title bar /
+        # buttons / panels don't bleed past the corners of the window.
+        radius = 16
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), radius, radius)
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+        super().resizeEvent(event)
+
 
 # ----- sub-widgets -----
+
+
+class _RoundedRoot(QWidget):
+    """Central widget that paints an antialiased rounded-rect fill.
+
+    Combined with ``WA_TranslucentBackground`` on the main window, this
+    gives the frameless window soft rounded corners without a jagged
+    pixel mask. Layout / child widgets live on top of this as usual.
+
+    The widget also doubles as the frameless window's resize handle:
+    when the cursor enters the margin strip exposed by the outer layout
+    it updates the cursor shape, and a press there calls
+    ``windowHandle().startSystemResize(edges)`` — same compositor-owned
+    path that the drag handler uses for move.
+    """
+
+    _RESIZE_MARGIN = 5
+
+    def __init__(self, radius: int, fill: QColor, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._radius = radius
+        self._fill = fill
+        self.setMouseTracking(True)
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self._fill)
+        p.drawRoundedRect(QRectF(self.rect()), self._radius, self._radius)
+
+    def _edges_at(self, pos) -> Qt.Edge:
+        m = self._RESIZE_MARGIN
+        rect = self.rect()
+        edges = Qt.Edge(0)
+        if pos.x() <= m:
+            edges |= Qt.Edge.LeftEdge
+        elif pos.x() >= rect.width() - m:
+            edges |= Qt.Edge.RightEdge
+        if pos.y() <= m:
+            edges |= Qt.Edge.TopEdge
+        elif pos.y() >= rect.height() - m:
+            edges |= Qt.Edge.BottomEdge
+        return edges
+
+    @staticmethod
+    def _cursor_for(edges: Qt.Edge) -> Qt.CursorShape:
+        left_top = Qt.Edge.LeftEdge | Qt.Edge.TopEdge
+        right_bottom = Qt.Edge.RightEdge | Qt.Edge.BottomEdge
+        right_top = Qt.Edge.RightEdge | Qt.Edge.TopEdge
+        left_bottom = Qt.Edge.LeftEdge | Qt.Edge.BottomEdge
+        if edges in (left_top, right_bottom):
+            return Qt.CursorShape.SizeFDiagCursor
+        if edges in (right_top, left_bottom):
+            return Qt.CursorShape.SizeBDiagCursor
+        if edges & (Qt.Edge.LeftEdge | Qt.Edge.RightEdge):
+            return Qt.CursorShape.SizeHorCursor
+        if edges & (Qt.Edge.TopEdge | Qt.Edge.BottomEdge):
+            return Qt.CursorShape.SizeVerCursor
+        return Qt.CursorShape.ArrowCursor
+
+    def mouseMoveEvent(self, event) -> None:
+        if not event.buttons():
+            self.setCursor(self._cursor_for(self._edges_at(event.position().toPoint())))
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.unsetCursor()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            edges = self._edges_at(event.position().toPoint())
+            if edges:
+                handle = self.window().windowHandle()
+                if handle is not None and handle.startSystemResize(edges):
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
 
 
 class _AppBar(QFrame):
@@ -393,18 +584,22 @@ class _AppBar(QFrame):
 
     def __init__(self, accent: QColor, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedHeight(40)
-        self.setStyleSheet("background: rgba(10, 14, 22, 0.85); border-bottom: 1px solid #141d2a;")
+        self.setFixedHeight(56)
+        # Transparent bar — the rounded root widget paints underneath
+        # and we stay fully within the window's rounded-rect clip.
+        self.setStyleSheet("background: transparent;")
         row = QHBoxLayout(self)
-        row.setContentsMargins(14, 0, 0, 0)
+        # Pad away from the rounded window corners so the brand text
+        # isn't colliding with the top-left arc.
+        row.setContentsMargins(22, 6, 10, 6)
         row.setSpacing(10)
 
         # Brand cluster: two rows stacked in a QVBoxLayout so the
         # status caption sits under the brand instead of running
         # alongside it (which read cluttered before).
         brand_col = QVBoxLayout()
-        brand_col.setSpacing(0)
-        brand_col.setContentsMargins(0, 4, 0, 4)
+        brand_col.setSpacing(4)
+        brand_col.setContentsMargins(0, 0, 0, 0)
 
         brand_row = QHBoxLayout()
         brand_row.setSpacing(6)
@@ -435,10 +630,18 @@ class _AppBar(QFrame):
         # Middle area: pure drag region.
         row.addStretch(1)
 
-        self._turn_pill = QLabel("Your turn")
+        self._turn_pill = QLabel("YOUR TURN")
         self._turn_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._turn_pill.setMinimumWidth(128)
+        # Let the pill hug its text — no min-width padding.
+        self._turn_pill.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         self._turn_pill.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        # Qt stylesheets ignore letter-spacing; apply via QFont so the
+        # uppercased status actually reads as a status chip.
+        pill_font = self._turn_pill.font()
+        pill_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 110)
+        pill_font.setWeight(QFont.Weight.DemiBold)
+        pill_font.setPointSize(max(8, pill_font.pointSize() - 2))
+        self._turn_pill.setFont(pill_font)
         row.addWidget(self._turn_pill)
 
         self._mic_btn = _IconButton("fa5s.microphone", "Talk to Rook")
@@ -454,6 +657,7 @@ class _AppBar(QFrame):
         row.addWidget(self._menu_btn)
 
         # Window controls on the far right — minimise / maximise / close.
+        row.addSpacing(4)
         for icon_name, signal in [
             ("mdi.window-minimize", self.minimize_clicked),
             ("mdi.window-maximize", self.toggle_maximize_clicked),
@@ -461,18 +665,25 @@ class _AppBar(QFrame):
         ]:
             btn = QToolButton()
             btn.setIcon(qta.icon(icon_name, color="#9aa7b9"))
-            btn.setFixedSize(46, 40)
+            btn.setFixedSize(32, 32)
             btn.setAutoRaise(True)
-            close_hover = "#e53935" if icon_name == "mdi.close" else "rgba(255, 255, 255, 0.07)"
+            is_close = icon_name == "mdi.close"
+            hover_bg = "#e53935" if is_close else "rgba(255, 255, 255, 0.08)"
             btn.setStyleSheet(
-                "QToolButton { background: transparent; border: none; } "
-                f"QToolButton:hover {{ background: {close_hover}; }}"
+                "QToolButton { background: transparent; border: none; border-radius: 10px; } "
+                f"QToolButton:hover {{ background: {hover_bg}; }}"
             )
             btn.clicked.connect(signal.emit)
             row.addWidget(btn)
+        row.addSpacing(8)
 
         self._accent = accent
         self._drag_offset: QPoint | None = None
+        # Cache the last-applied state so set_accent() can re-skin the
+        # accent-coupled bits in place after a live persona swap.
+        self._last_status: tuple[str, bool] = ("booting", False)
+        self._last_turn: tuple[str, bool] = ("YOUR TURN", False)
+        self._last_mic_active = False
         self.set_status("booting", error=False)
 
     # ----- drag / maximise-on-double-click -----
@@ -492,11 +703,24 @@ class _AppBar(QFrame):
             self._child_at(event), (QToolButton, QPushButton)
         ):
             top = self.window()
+            handle = top.windowHandle()
+            pos = event.position().toPoint()
+            # The top ~5px of the AppBar is the window's top-resize strip
+            # — takes priority over drag so the user can actually grab
+            # the edge. Corner hits include the adjacent horizontal edge.
+            if pos.y() <= _TOP_RESIZE_STRIP:
+                edges = Qt.Edge.TopEdge
+                if pos.x() <= _TOP_RESIZE_STRIP:
+                    edges |= Qt.Edge.LeftEdge
+                elif pos.x() >= self.width() - _TOP_RESIZE_STRIP:
+                    edges |= Qt.Edge.RightEdge
+                if handle is not None and handle.startSystemResize(edges):
+                    event.accept()
+                    return
             # Prefer compositor-owned system move — the only drag path
             # that works on Wayland (where QWidget.move is a no-op) and
             # keeps drag smooth on X11. Falls through to a manual
             # offset-based drag if the platform can't service it.
-            handle = top.windowHandle()
             if handle is not None and handle.startSystemMove():
                 event.accept()
                 return
@@ -524,6 +748,7 @@ class _AppBar(QFrame):
                 self.toggle_maximize_clicked.emit()
 
     def set_status(self, text: str, *, error: bool = False) -> None:
+        self._last_status = (text, error)
         colour = "#ef4444" if error else self._accent.name()
         text_colour = "#ef4444" if error else "#8796a8"
         self._status_dot.setStyleSheet(
@@ -538,39 +763,57 @@ class _AppBar(QFrame):
         )
 
     def set_turn_label(self, label: str, *, highlight: bool) -> None:
-        self._turn_pill.setText(label)
+        self._last_turn = (label, highlight)
+        # Uppercase in Python — Qt stylesheets don't support text-transform.
+        self._turn_pill.setText(label.upper())
         if highlight:
             r, g, b = self._accent.red(), self._accent.green(), self._accent.blue()
             self._turn_pill.setStyleSheet(
-                f"background: rgba({r}, {g}, {b}, 0.18); "
-                f"border: 1px solid {self._accent.name()}; "
+                f"QLabel {{ background: rgba({r}, {g}, {b}, 0.14); "
                 f"color: {self._accent.name()}; "
-                "border-radius: 13px; padding: 4px 14px; "
-                "font-size: 12px; font-weight: 600; letter-spacing: 0.3px;"
+                f"border-radius: 8px; padding: 2px 10px; }}"
             )
         else:
             self._turn_pill.setStyleSheet(
-                "background: rgba(255, 255, 255, 0.03); border: 1px solid #1e2b3a; "
-                "color: #9aa7b9; border-radius: 13px; padding: 4px 14px; "
-                "font-size: 12px; font-weight: 500; letter-spacing: 0.3px;"
+                "QLabel { background: rgba(255, 255, 255, 0.04); "
+                "color: #8896a8; border-radius: 8px; padding: 2px 10px; }"
             )
 
     def set_mic_active(self, active: bool) -> None:
         """Highlight the mic button while recording."""
+        self._last_mic_active = active
         colour = self._accent.name() if active else "#9aa7b9"
-        border = self._accent.name() if active else "#1e2b3a"
+        if active:
+            r, g, b = self._accent.red(), self._accent.green(), self._accent.blue()
+            bg = f"rgba({r}, {g}, {b}, 0.16)"
+        else:
+            bg = "transparent"
         self._mic_btn.setStyleSheet(
-            "QToolButton { background: transparent; border: 1px solid "
-            f"{border}; border-radius: 6px; color: {colour}; "
-            "} QToolButton:hover { background: rgba(255, 255, 255, 0.05); }"
+            f"QToolButton {{ background: {bg}; border: none; border-radius: 10px; color: {colour}; }} "
+            "QToolButton:hover { background: rgba(255, 255, 255, 0.06); }"
         )
         self._mic_btn.setIcon(qta.icon("fa5s.microphone", color=colour))
+
+    def set_accent(self, accent: QColor) -> None:
+        """Re-skin every accent-coupled element after a live persona swap.
+
+        Called from the window's persona-change path. Replays the last
+        status / turn-pill / mic state through the existing setters so
+        the new accent colour propagates without re-laying-out the bar.
+        """
+        self._accent = accent
+        text, error = self._last_status
+        self.set_status(text, error=error)
+        label, highlight = self._last_turn
+        self.set_turn_label(label, highlight=highlight)
+        self.set_mic_active(self._last_mic_active)
 
     def _open_menu(self) -> None:
         menu = QMenu(self)
         menu.setStyleSheet(
-            "QMenu { background: #10161f; color: #dbe4ef; border: 1px solid #1e2b3a; } "
-            "QMenu::item:selected { background: rgba(52, 211, 153, 0.15); }"
+            "QMenu { background: #10161f; color: #dbe4ef; border-radius: 10px; padding: 6px; } "
+            "QMenu::item { padding: 6px 14px; border-radius: 6px; } "
+            "QMenu::item:selected { background: rgba(255, 255, 255, 0.08); }"
         )
         new_action = menu.addAction(qta.icon("fa5s.redo-alt", color="#9aa7b9"), "New game")
         settings_action = menu.addAction(qta.icon("fa5s.cog", color="#9aa7b9"), "Settings…")
@@ -598,19 +841,19 @@ class _InputBar(QWidget):
         self._field = QLineEdit()
         self._field.setPlaceholderText("type a move or question — e.g. e4, Nf3, castle kingside")
         self._field.setStyleSheet(
-            "QLineEdit { background: #0d1520; border: 1px solid #1e2b3a; "
-            "border-radius: 6px; color: #dbe4ef; padding: 8px 12px; "
+            "QLineEdit { background: #0d1520; border: none; "
+            "border-radius: 12px; color: #dbe4ef; padding: 10px 14px; "
             "font-family: monospace; font-size: 13px; } "
-            f"QLineEdit:focus {{ border-color: {accent.name()}; }}"
+            f"QLineEdit:focus {{ background: #0f1824; color: {accent.name()}; }}"
         )
         self._field.returnPressed.connect(self._emit)
         row.addWidget(self._field, stretch=1)
 
         self._send = QPushButton()
         self._send.setIcon(qta.icon("fa5s.paper-plane", color="#0a0e14"))
-        self._send.setFixedSize(40, 36)
+        self._send.setFixedSize(42, 40)
         self._send.setStyleSheet(
-            f"QPushButton {{ background: {accent.name()}; border: none; border-radius: 6px; }} "
+            f"QPushButton {{ background: {accent.name()}; border: none; border-radius: 12px; }} "
             "QPushButton:disabled { background: #1e2b3a; }"
         )
         self._send.clicked.connect(self._emit)
@@ -635,16 +878,12 @@ class _IconButton(QToolButton):
         super().__init__(parent)
         self.setIcon(qta.icon(icon_name, color="#9aa7b9"))
         self.setToolTip(tip)
-        self.setFixedSize(30, 30)
+        self.setFixedSize(32, 32)
         self.setAutoRaise(True)
         self.setStyleSheet(
-            "QToolButton { background: transparent; border: 1px solid #1e2b3a; border-radius: 6px; } "
-            "QToolButton:hover { background: rgba(255, 255, 255, 0.05); border-color: #2b3c58; }"
+            "QToolButton { background: transparent; border: none; border-radius: 10px; } "
+            "QToolButton:hover { background: rgba(255, 255, 255, 0.06); }"
         )
-
-
-# Silence unused-import lints.
-_ = QEvent
 
 
 __all__ = ["RookWindow"]

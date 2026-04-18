@@ -55,6 +55,19 @@ _MARKDOWN_RE = re.compile(
 _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\s)([^\*\n]+?)(?<!\s)\*(?!\*)")
 _UNDERSCORE_ITALIC_RE = re.compile(r"(?<!_)_(?!\s)([^_\n]+?)(?<!\s)_(?!_)")
 
+# Paired outer quotes the LLM sometimes wraps its whole reply in —
+# both ASCII and typographic variants. Small instruction-tuned models
+# (Llama-3.2-1B notably) learn this from training data that formats
+# assistant turns as ``Assistant: "..."``. TTS reads the quote mark
+# as literal "quote ... unquote" which sounds broken.
+_OUTER_QUOTE_PAIRS = (
+    ('"', '"'),
+    ("\u201c", "\u201d"),  # U+201C/U+201D curly double
+    ("\u2018", "\u2019"),  # U+2018/U+2019 curly single
+    ("'", "'"),
+    ("\u00ab", "\u00bb"),  # U+00AB/U+00BB guillemets
+)
+
 
 # If the model's entire output was a <think> block, we substitute a
 # short persona-agnostic filler so the speaker isn't mute. Random pick
@@ -119,12 +132,34 @@ class VoiceCleanupHook:
         cleaned = _MARKDOWN_RE.sub("", content)
         cleaned = _ITALIC_RE.sub(r"\1", cleaned)
         cleaned = _UNDERSCORE_ITALIC_RE.sub(r"\1", cleaned)
-        cleaned = cleaned.strip()
+        cleaned = _strip_outer_quotes(cleaned.strip())
         if cleaned == content.strip():
             return None
         new_payload = dict(payload)
         new_payload["content"] = cleaned
         return HookResult.replace(new_payload, reason="markdown stripped for TTS")
+
+
+def _strip_outer_quotes(text: str) -> str:
+    """Peel one layer of whole-reply quotes if present.
+
+    Idempotent and conservative: only strips when the opener/closer
+    form a recognised pair AND the whole payload sits between them.
+    A reply that *contains* quoted dialogue inside (e.g.
+    ``The book says "nice try"``) is left alone because the opener
+    and closer don't bracket the entire string.
+    """
+    if len(text) < 2:
+        return text
+    for open_q, close_q in _OUTER_QUOTE_PAIRS:
+        if text.startswith(open_q) and text.endswith(close_q):
+            inner = text[len(open_q) : len(text) - len(close_q)].strip()
+            # Bail if the inner still contains the same opener — means
+            # the outer pair is actually two adjacent quoted sections,
+            # not a wrapper.
+            if inner and open_q not in inner:
+                return inner
+    return text
 
 
 class BriefingLeakGuard:

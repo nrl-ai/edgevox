@@ -36,6 +36,24 @@ _CHECK = QColor(239, 68, 68, 160)
 _COORD = QColor("#8d7a64")
 
 
+def _opposite_tint(square: QColor) -> QColor:
+    """Pick a coordinate-label colour that contrasts with the square.
+
+    Light squares → the dark-square tint; dark squares → light-square.
+    Gives us lichess-style auto-contrasting coords without hardcoding
+    a theme-specific palette per board theme.
+    """
+    # Rough luminance — we don't need gamma correctness for a label tint.
+    lum = 0.299 * square.redF() + 0.587 * square.greenF() + 0.114 * square.blueF()
+    if lum >= 0.5:
+        return QColor(square.red() // 2, square.green() // 2, square.blue() // 2)
+    return QColor(
+        min(255, square.red() + 80),
+        min(255, square.green() + 80),
+        min(255, square.blue() + 80),
+    )
+
+
 def _piece_filename(symbol: str) -> str:
     """SAN symbol → lichess-style filename. ``K`` → ``wK.svg``, ``k`` → ``bK.svg``."""
     colour = "w" if symbol.isupper() else "b"
@@ -57,6 +75,10 @@ class ChessBoardView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
         self.setStyleSheet("background: transparent;")
+        # Whole board reads as clickable — show the pointer cursor so it
+        # matches the rest of the UI's affordance language.
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
 
         self._state: ChessState | None = None
         self._board = chess.Board()
@@ -159,7 +181,11 @@ class ChessBoardView(QGraphicsView):
         return QRectF(x, y, sz, sz)
 
     def _piece_pixmap(self, symbol: str, size: int) -> QPixmap | None:
-        """Cached pixmap of the piece's SVG at the target square size."""
+        """Cached pixmap of the piece's SVG at the target square size.
+
+        Bakes in a soft drop shadow so pieces lift off the board. Done
+        once per (set, symbol, size) and cached — no per-frame cost.
+        """
         key = (self._piece_set, symbol, size)
         cached = self._pixmaps.get(key)
         if cached is not None:
@@ -167,16 +193,41 @@ class ChessBoardView(QGraphicsView):
         renderer = self._renderers.get(symbol)
         if renderer is None:
             return None
-        # Draw pieces slightly inset so they don't touch the square edges.
+        inset = size * 0.05
+        render_rect = QRectF(inset, inset, size - 2 * inset, size - 2 * inset)
+
+        # First render the piece on its own, then render a shifted dark
+        # silhouette underneath by composing with QPainter.
+        piece = QPixmap(QSize(size, size))
+        piece.fill(Qt.GlobalColor.transparent)
+        pp = QPainter(piece)
+        pp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pp.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        renderer.render(pp, render_rect)
+        pp.end()
+
+        shadow = QPixmap(QSize(size, size))
+        shadow.fill(Qt.GlobalColor.transparent)
+        sp = QPainter(shadow)
+        sp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        sp.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        renderer.render(sp, render_rect)
+        # Tint the shadow buffer to near-black at reduced alpha.
+        sp.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        sp.fillRect(shadow.rect(), QColor(0, 0, 0, 110))
+        sp.end()
+
         pm = QPixmap(QSize(size, size))
         pm.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pm)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        # 6% inset for breathing room.
-        inset = size * 0.06
-        renderer.render(painter, QRectF(inset, inset, size - 2 * inset, size - 2 * inset))
+        # Shadow first, offset down + right by a tiny amount.
+        offset = max(1, int(size * 0.02))
+        painter.drawPixmap(offset, offset, shadow)
+        painter.drawPixmap(0, 0, piece)
         painter.end()
+
         self._pixmaps[key] = pm
         return pm
 
@@ -240,17 +291,38 @@ class ChessBoardView(QGraphicsView):
             item.setPos(rect.x(), rect.y())
 
         # Coordinate labels — a/h files along the bottom edge, 1-8 on
-        # the left. Tiny, in-board, lichess style.
-        label_font = QFont("monospace", max(7, int(sz * 0.13)))
+        # the left. Lichess-style: tinted to contrast with the square
+        # they sit on so they stay readable on any theme. Kept subtle
+        # with a low opacity so they don't compete with pieces.
+        label_font = QFont("monospace", max(7, int(sz * 0.11)))
+        label_font.setWeight(QFont.Weight.Bold)
         for i in range(8):
-            file_label = "abcdefgh"[i] if self._orientation == "white" else "abcdefgh"[7 - i]
+            # Each i is a visual index (0 = left column / top row on screen).
+            # Map it to the chess square under the coord label so we can
+            # tint the label against that square's real colour.
+            if self._orientation == "white":
+                file_chess = i  # files a..h left→right
+                rank_bottom = 0  # white's back rank sits at the visual bottom
+                rank_left = 7 - i  # ranks 8..1 top→bottom
+            else:
+                file_chess = 7 - i
+                rank_bottom = 7
+                rank_left = i
+
+            file_sq_light = (file_chess + rank_bottom) % 2 == 1
+            rank_sq_light = ((0 if self._orientation == "white" else 7) + rank_left) % 2 == 1
+
+            file_label = "abcdefgh"[file_chess]
             t = self._scene.addText(file_label, label_font)
-            t.setDefaultTextColor(_COORD)
-            t.setPos(i * sz + sz * 0.72, 8 * sz - sz * 0.28)
-            rank_label = str(8 - i) if self._orientation == "white" else str(i + 1)
+            t.setDefaultTextColor(_opposite_tint(self._light if file_sq_light else self._dark))
+            t.setOpacity(0.45)
+            t.setPos(i * sz + sz * 0.80, 8 * sz - sz * 0.28)
+
+            rank_label = str(rank_left + 1)
             rt = self._scene.addText(rank_label, label_font)
-            rt.setDefaultTextColor(_COORD)
-            rt.setPos(sz * 0.04, i * sz + sz * 0.02)
+            rt.setDefaultTextColor(_opposite_tint(self._light if rank_sq_light else self._dark))
+            rt.setOpacity(0.45)
+            rt.setPos(sz * 0.05, i * sz + sz * 0.01)
 
     # ----- interaction -----
 

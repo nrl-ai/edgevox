@@ -1,22 +1,17 @@
 """Voice pipeline — mic → VAD → Whisper → user text.
 
-Wraps EdgeVox's :class:`AudioRecorder` (mic + silero VAD + AEC) and
-:class:`WhisperSTT` in a Qt-friendly surface. The recorder runs on its
-own daemon threads internally; transcription happens on a
-:class:`QThreadPool` worker so the mic loop never blocks on Whisper.
+Thin Qt adapter over :class:`edgevox.audio.AudioRecorder` (mic + silero
+VAD + echo-aware barge-in detection) and :class:`WhisperSTT`. The
+recorder is linked to the global :class:`InterruptiblePlayer` so TTS
+playback automatically pauses the mic queue and resumes after the
+cooldown — we don't re-implement that gate here.
 
 Emits:
-    - ``transcript`` — finalised user utterance, ready to feed into
-      :meth:`RookBridge.submit_text`.
-    - ``level`` — 0..1 RMS so the UI can draw a mic indicator.
-    - ``error`` — human-readable problem (permission denied, no
-      input device, Whisper load failed).
-    - ``loading`` — emitted once at start while STT models initialise,
-      cleared afterwards.
-
-The same mic-capture + VAD code powers the main TUI voice loop, so
-we inherit its battle-tested behaviour: speech boundary detection,
-echo suppression when TTS plays back, interrupt handling.
+    - ``transcript`` — finalised user utterance.
+    - ``level`` — 0..1 RMS for the mic indicator.
+    - ``barge_in`` — user spoke over Rook mid-reply; the bridge must
+      cut TTS + cancel the in-flight agent turn.
+    - ``error`` / ``loading`` / ``ready`` — lifecycle.
 """
 
 from __future__ import annotations
@@ -29,7 +24,7 @@ import numpy as np
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
 if TYPE_CHECKING:
-    from edgevox.audio._original import AudioRecorder
+    from edgevox.audio import AudioRecorder
     from edgevox.stt.whisper import WhisperSTT
 
 log = logging.getLogger(__name__)
@@ -38,10 +33,13 @@ log = logging.getLogger(__name__)
 class VoiceWorker(QObject):
     """Qt-friendly mic pipeline.
 
-    Call :meth:`start` once models have finished loading (expensive,
-    ~1-3 s on first use). Call :meth:`set_listening` to toggle the
-    mic on/off — stops accepting speech while Rook is thinking /
-    speaking to avoid the TTS echoing into the mic.
+    Call :meth:`start` after construction; STT + mic load on a worker
+    thread. The recorder links itself to the global
+    :class:`InterruptiblePlayer` so :meth:`InterruptiblePlayer.play` pauses
+    mic capture at the source (queue never fills with TTS echo) and
+    resumes after :data:`ECHO_COOLDOWN_SECS`. :meth:`set_listening`
+    is still available but only gates STT dispatch on user request —
+    echo suppression is automatic.
     """
 
     transcript = Signal(str)
@@ -49,10 +47,20 @@ class VoiceWorker(QObject):
     error = Signal(str)
     loading = Signal(bool)
     ready = Signal()
+    # User spoke over the bot mid-reply. The bridge must cut TTS and
+    # cancel the in-flight agent turn.
+    barge_in = Signal()
 
-    def __init__(self, *, language: str = "en", parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        language: str = "en",
+        input_device: int | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._language = language
+        self._input_device = input_device
         self._recorder: AudioRecorder | None = None
         self._stt: WhisperSTT | None = None
         self._listening = False  # True while Rook is idle / expecting user input
@@ -100,7 +108,7 @@ class VoiceWorker(QObject):
             # Deferred imports so ``VoiceWorker()`` in the main thread
             # stays cheap; we only pay STT init when the user actually
             # wants voice.
-            from edgevox.audio._original import AudioRecorder
+            from edgevox.audio import AudioRecorder, player
             from edgevox.stt.whisper import WhisperSTT
 
             log.info("Loading Whisper STT for voice input...")
@@ -109,10 +117,21 @@ class VoiceWorker(QObject):
                 return
             self._stt = stt
 
+            # ``player_ref=player`` lets the recorder read the live TTS
+            # output RMS to apply the 3x energy-ratio gate — the
+            # real defence against self-trigger when the bot is speaking.
             recorder = AudioRecorder(
                 on_speech=self._on_speech_segment,
+                on_interrupt=self._on_interrupt,
                 on_level=self._on_level,
+                device=self._input_device,
+                player_ref=player,
             )
+            # Bi-directional link: ``player.play()`` calls
+            # ``recorder.pause()`` at start of playback and
+            # ``recorder.resume_after_cooldown()`` after, so we don't
+            # queue TTS echo into the VAD stream in the first place.
+            player.link_recorder(recorder)
             recorder.start()
             if self._shutdown.is_set():
                 recorder.stop()
@@ -142,6 +161,14 @@ class VoiceWorker(QObject):
         if not self._listening or self._stt is None:
             return
         self._pool.start(_TranscribeJob(self, audio.copy()))
+
+    def _on_interrupt(self) -> None:
+        """Audio thread: user spoke over Rook mid-TTS. Re-emit as Qt
+        signal so the bridge can tear down the in-flight turn and the
+        TTS worker can cut playback. The recorder preserves the
+        user's continuing speech for the next STT pass on its own."""
+        if self._listening:
+            self.barge_in.emit()
 
     def _on_level(self, level: float) -> None:
         """Mic RMS for the indicator."""

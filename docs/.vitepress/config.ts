@@ -58,6 +58,8 @@ export default withMermaid(
               { text: "Agents & Tools", link: "/guide/agents" },
               { text: "TUI Commands", link: "/guide/commands" },
               { text: "ROS2 Integration", link: "/guide/ros2" },
+              { text: "Chess Partner", link: "/guide/chess" },
+              { text: "RookApp (Desktop)", link: "/guide/desktop" },
             ],
           },
           {

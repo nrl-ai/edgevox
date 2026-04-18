@@ -1,21 +1,22 @@
 """Text-to-speech pipeline — Kokoro → sounddevice playback.
 
-Keeps Kokoro's ~300 MB ONNX load off the main thread: the backend
-warms up inside :class:`_WarmupJob` on a :class:`QThreadPool` worker
-so the first chat bubble can render while the model downloads /
-loads. Subsequent :meth:`speak` calls synthesise on the same pool.
+Thin Qt adapter over the engine's frame pipeline:
 
-The worker exposes three Qt signals:
+    Pipeline([SentenceSplitter, TTSProcessor, PlaybackProcessor])
 
-- ``started`` — playback is about to begin; UI should mark the face
-  tempo ``speaking`` and gate the mic (AEC) to avoid self-loop.
-- ``finished`` — playback ended (completed or interrupted); UI can
-  resume listening.
-- ``error`` — one-shot human-readable failure string. Voice-only
-  failures shouldn't crash the app; we surface them in the status bar.
+running per utterance. Benefits over a single-shot synth+play:
 
-Kokoro is MIT-licensed — safe to ship inside a MIT app. Falling back
-to Piper (also MIT) would be a future extension.
+- Sentences stream to the speaker as they leave TTS — first speech
+  lands in ~100-200 ms instead of after the full reply is synthesised.
+- :meth:`interrupt` cascades through :meth:`Pipeline.interrupt`, which
+  calls :meth:`PlaybackProcessor.on_interrupt` → :meth:`player.interrupt`
+  atomically; in-flight synth + playback both bail out.
+- :class:`PlaybackProcessor` uses the global
+  :class:`InterruptiblePlayer` which is already linked to our
+  :class:`AudioRecorder` (see :mod:`voice`), so pause/resume of the mic
+  queue is automatic — no separate gate to maintain here.
+
+Kokoro is MIT-licensed — safe to ship inside a MIT app.
 """
 
 from __future__ import annotations
@@ -25,18 +26,29 @@ import threading
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
+from edgevox.audio import player
+from edgevox.core.frames import EndFrame, Pipeline, TextFrame
+from edgevox.core.processors import PlaybackProcessor, SentenceSplitter, TTSProcessor
+
 log = logging.getLogger(__name__)
 
 
 class TTSWorker(QObject):
-    """Qt-friendly Kokoro wrapper."""
+    """Qt-friendly Kokoro wrapper driven through the engine pipeline."""
 
     started = Signal()
     finished = Signal()
     error = Signal(str)
     ready = Signal()
 
-    def __init__(self, *, voice: str = "af_heart", lang_code: str = "a", parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        voice: str = "af_heart",
+        lang_code: str = "a",
+        output_device: int | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._voice = voice
         self._lang_code = lang_code
@@ -46,12 +58,16 @@ class TTSWorker(QObject):
         self._ready_lock = threading.Lock()
         self._warming = False
         self._active_lock = threading.Lock()
+        self._active_pipeline: Pipeline | None = None
+        self._active_pipeline_lock = threading.Lock()
         # Queue at most ONE pending utterance while the model warms up
         # so the first reply the user hears is the latest one, not some
         # stale "thinking..." line. Later replies overwrite the pending
         # slot. Once the model loads we drain the slot.
         self._pending_text: str | None = None
         self._pending_lock = threading.Lock()
+        if output_device is not None:
+            player.set_device(output_device)
 
     # ----- lifecycle -----
 
@@ -65,6 +81,11 @@ class TTSWorker(QObject):
 
     def stop(self) -> None:
         self._shutdown.set()
+        self.interrupt()
+
+    def set_output_device(self, device: int | None) -> None:
+        """Route playback to a different output device."""
+        player.set_device(device)
 
     # ----- public API -----
 
@@ -84,6 +105,22 @@ class TTSWorker(QObject):
                 self._pending_text = text
             return
         self._pool.start(_SpeakJob(self, text))
+
+    def interrupt(self) -> None:
+        """Cut any in-flight TTS synth + playback immediately.
+
+        Safe to call when nothing is playing — no-ops. Used by the
+        barge-in path (user spoke over Rook).
+        """
+        with self._active_pipeline_lock:
+            pipe = self._active_pipeline
+        if pipe is not None:
+            pipe.interrupt()
+        # Always cut the player too — Pipeline.interrupt fires
+        # PlaybackProcessor.on_interrupt which does this, but a barge-in
+        # can arrive in the gap between SentenceSplitter emitting and
+        # PlaybackProcessor running. Belt + braces.
+        player.interrupt()
 
     # ----- worker bodies -----
 
@@ -118,26 +155,29 @@ class TTSWorker(QObject):
         # ever asks us to speak the latest reply.
         if not self._active_lock.acquire(blocking=False):
             return
+        pipeline = Pipeline([SentenceSplitter(), TTSProcessor(self._tts), PlaybackProcessor()])
+        with self._active_pipeline_lock:
+            self._active_pipeline = pipeline
         try:
             self.started.emit()
             try:
-                audio = self._tts.synthesize(text)
+                # ``EndFrame`` is how :class:`SentenceSplitter` knows to
+                # flush its internal buffer — without it, a reply that
+                # doesn't terminate in ``.!?`` (or the tail after the
+                # last punctuation) would never leave the splitter and
+                # the user hears nothing. Kept separate from the
+                # input ``TextFrame`` to match the LLMProcessor →
+                # SentenceSplitter contract used by the TUI / CLI.
+                for _frame in pipeline.run([TextFrame(text=text), EndFrame()]):
+                    if self._shutdown.is_set():
+                        pipeline.interrupt()
+                        break
             except Exception as e:
-                log.exception("Kokoro synth failed")
+                log.exception("TTS pipeline failed")
                 self.error.emit(f"TTS error: {e}")
-                return
-            if self._shutdown.is_set():
-                return
-            try:
-                # Deferred import: play_audio imports sounddevice which
-                # probes audio devices on import in some builds.
-                from edgevox.audio import play_audio
-
-                play_audio(audio, sample_rate=self._tts.sample_rate)
-            except Exception as e:
-                log.exception("Audio playback failed")
-                self.error.emit(f"Audio playback: {e}")
         finally:
+            with self._active_pipeline_lock:
+                self._active_pipeline = None
             self.finished.emit()
             self._active_lock.release()
 
