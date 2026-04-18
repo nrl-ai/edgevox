@@ -1,17 +1,16 @@
-# RookApp — Tauri desktop build matrix.
+# RookApp — PySide6 desktop build matrix.
+#
+# Builds the Qt app into a single-executable installer for each host
+# OS using PyInstaller (GPL with bundling exception; the produced
+# binary inherits the app's MIT licence, not GPL). Cross-compilation
+# isn't viable for PyInstaller (each host produces its own platform),
+# so the matrix pins to native runners.
 #
 # Triggered on:
-#   - push to main (smoke-build, no artifact upload unless manually)
-#   - tags matching `rook-v*` → uploads installers to the matching GitHub release
+#   - push to main (smoke-build; artifacts uploaded, not released)
+#   - tags matching `rook-v*` → installers attached to the GitHub
+#     release with the same name
 #   - manual workflow_dispatch
-#
-# Produces:
-#   macOS   → .app (universal) + .dmg
-#   Windows → .msi + .exe installer
-#   Linux   → .AppImage + .deb + .rpm
-#
-# Cross-compilation isn't supported by Tauri (each platform has a
-# distinct WebView backend), so the matrix runs on native runners.
 
 name: RookApp Desktop
 
@@ -20,13 +19,12 @@ on:
     branches: [main]
     tags: ["rook-v*"]
     paths:
-      - "webui/**"
-      - "edgevox/examples/agents/chess_robot/**"
-      - "edgevox/server/**"
+      - "edgevox/**"
+      - "pyproject.toml"
       - ".github/workflows/rookapp-desktop.yml"
   pull_request:
     paths:
-      - "webui/**"
+      - "edgevox/apps/**"
       - ".github/workflows/rookapp-desktop.yml"
   workflow_dispatch:
 
@@ -38,102 +36,90 @@ jobs:
         include:
           - name: macos-arm
             runner: macos-14
-            target: aarch64-apple-darwin
-            bundles: app,dmg
+            ext: dmg
           - name: macos-intel
             runner: macos-13
-            target: x86_64-apple-darwin
-            bundles: app,dmg
+            ext: dmg
           - name: windows
             runner: windows-latest
-            target: x86_64-pc-windows-msvc
-            bundles: msi,nsis
+            ext: exe
           - name: linux
             runner: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            bundles: appimage,deb,rpm
+            ext: AppImage
 
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
 
-      # ---- Frontend prereqs ----
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: webui/package-lock.json
-
-      # ---- Rust toolchain ----
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "webui/src-tauri -> target"
+          python-version: "3.12"
+          cache: pip
 
       # ---- Platform-specific system deps ----
-      - name: Install Linux deps
+      # PySide6 wheels are self-contained, but stockfish (used at
+      # runtime by the agent) is installed separately per OS, and
+      # Linux needs a handful of X libs for pyinstaller bundling.
+      - name: Install Linux system deps
         if: matrix.runner == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          # Tauri 2.x expects the ayatana indicator (newer) — drop
-          # the legacy libappindicator3-dev; they conflict with each
-          # other and you only need one.
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf
+            stockfish \
+            libxcb-cursor0 \
+            libxkbcommon-x11-0 \
+            fuse libfuse2
 
-      # ---- Install Tauri CLI ----
-      - name: Install tauri-cli
-        run: cargo install tauri-cli --version '^2.0' --locked
+      - name: Install macOS system deps
+        if: startsWith(matrix.runner, 'macos-')
+        run: brew install stockfish
 
-      # ---- Build frontend into edgevox/server/static ----
-      - name: Install webui deps
-        working-directory: webui
-        run: npm ci
+      - name: Install Windows system deps
+        if: matrix.runner == 'windows-latest'
+        # Stockfish for Windows via winget would require elevation;
+        # prefer bundling a static binary under ``assets/`` at build
+        # time if you want full offline experience. For now we trust
+        # that users have it on PATH.
+        run: echo "stockfish must be provided by the user on Windows"
 
-      - name: Build webui
-        working-directory: webui
-        run: npm run build
+      - name: Install edgevox with desktop extras
+        run: pip install -e ".[desktop]" pyinstaller
 
-      # ---- Tauri build ----
-      - name: Build Tauri app
-        working-directory: webui/src-tauri
-        env:
-          # Release builds default to the chess agent + Rook mode.
-          EDGEVOX_DESKTOP_AGENT: "edgevox.examples.agents.chess_robot.app:build_rook_server_agent"
-          ROOK_MODE: "1"
-        run: cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
-
-      # ---- Collect artifacts ----
-      - name: Gather installers
+      - name: Build executable (PyInstaller)
         shell: bash
         run: |
-          mkdir -p artifacts
-          # Common output paths per bundle type.
-          BASE="webui/src-tauri/target/${{ matrix.target }}/release/bundle"
-          for d in appimage deb rpm dmg macos msi nsis; do
-            if [ -d "$BASE/$d" ]; then
-              find "$BASE/$d" -maxdepth 2 -type f \( -iname "*.appimage" -o -iname "*.deb" -o -iname "*.rpm" -o -iname "*.dmg" -o -iname "*.app.tar.gz" -o -iname "*.msi" -o -iname "*.exe" \) -exec cp {} artifacts/ \;
-            fi
-          done
-          ls -la artifacts/
+          pyinstaller \
+            --name RookApp \
+            --onefile \
+            --windowed \
+            --hidden-import edgevox.apps.chess_robot_qt \
+            --collect-submodules edgevox \
+            -p . \
+            rookapp_entry.py || true
+          # If the entry shim doesn't exist, create it and retry once.
+          if [ ! -d dist ]; then
+            python -c "from edgevox.apps.chess_robot_qt.main import main; main()" || true
+            cat > rookapp_entry.py <<'PY'
+          from edgevox.apps.chess_robot_qt.main import main
+          if __name__ == "__main__":
+              main()
+          PY
+            pyinstaller --name RookApp --onefile --windowed \
+              --hidden-import edgevox.apps.chess_robot_qt \
+              --collect-submodules edgevox \
+              -p . rookapp_entry.py
+          fi
+          ls -la dist/
 
       - uses: actions/upload-artifact@v4
         with:
           name: rookapp-${{ matrix.name }}
-          path: artifacts/*
+          path: dist/*
           if-no-files-found: warn
           retention-days: 7
 
-  # ---- Attach installers to the tagged GitHub release ----
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/rook-v')

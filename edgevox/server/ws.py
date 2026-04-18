@@ -66,7 +66,10 @@ def _wire_chess_state_forwarder(ws: WebSocket, core: ServerCore):
     synchronously from whatever thread applied the move — typically
     the agent worker thread, never the asyncio loop.
     """
-    deps = core.deps
+    # Use ``getattr`` so test doubles that don't carry a ``deps`` attr
+    # (e.g. legacy FakeCore in ``tests/test_server_app.py``) no-op
+    # gracefully. A real ServerCore always has ``deps``.
+    deps = getattr(core, "deps", None)
     if deps is None or not hasattr(deps, "subscribe") or not hasattr(deps, "snapshot"):
         return None
 

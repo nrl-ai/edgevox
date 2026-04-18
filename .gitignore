@@ -82,19 +82,8 @@ node_modules/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 
-# ---- Web UI source (Vite/React) ----
-# The built SPA is committed under edgevox/server/static/ — do NOT ignore it.
-webui/node_modules/
-webui/dist/
-
-# ---- Playwright test artefacts ----
-webui/test-results/
-webui/playwright-report/
-webui/.last-run.json
-webui/blob-report/
-
-# ---- Tauri build outputs (cargo-managed) ----
-webui/src-tauri/target/
+# ---- (webui removed 2026-04 — desktop app is now PySide6 under
+# edgevox/apps/chess_robot_qt/ — no Node/React/Tauri toolchain.) ----
 
 # ---- Local scratch / test artifacts ----
 layout_preview.*

@@ -66,6 +66,14 @@ sim-mujoco = [
 # manager (apt / brew / winget) or the upstream installer.
 chess-stockfish = []
 chess-maia = []
+# RookApp desktop extras — PySide6 + qtawesome. Both LGPL/MIT respectively
+# and licence-clean for an MIT app (PySide6 is LGPL-3, compatible via
+# dynamic linking; qtawesome is MIT). No other native deps beyond the
+# ones already in ``dependencies`` above.
+desktop = [
+    "PySide6>=6.6",  # LGPL-3 (dynamic-linked, MIT-app compatible)
+    "qtawesome>=1.4",  # MIT — Font Awesome + Phosphor + Material icons for Qt
+]
 # ros2: rclpy is a system package provided by the ROS2 workspace, not installable from PyPI
 dev = [
     "pytest>=7.0",
@@ -86,7 +94,7 @@ edgevox-cli = "edgevox.cli.main:main"
 edgevox-setup = "edgevox.setup_models:main"
 edgevox-serve = "edgevox.server.main:main"
 edgevox-agent = "edgevox.examples.agents.cli:main"
-edgevox-chess-robot = "edgevox.examples.agents.chess_robot.app:main"
+edgevox-chess-robot = "edgevox.apps.chess_robot_qt.main:main"
 
 [project.urls]
 Homepage = "https://github.com/vietanhdev/edgevox"

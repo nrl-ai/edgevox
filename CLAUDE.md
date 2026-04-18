@@ -121,5 +121,6 @@ Avoid reaching into private modules or `_agent_harness.py` directly.
 
 - Don't add cloud API calls or telemetry. EdgeVox is offline-first.
 - Don't introduce GPL-licensed dependencies (project is MIT).
+- **License verification is mandatory before adding any new dependency.** Check the package's actual license (PyPI/GitHub/documentation — not just one guess) and record the result inline in ``pyproject.toml`` next to the dep (e.g. ``# MIT`` / ``# LGPL-3 — dynamic-linked, compatible``). Copyleft licenses to refuse: GPL-2/3, AGPL, SSPL. LGPL is acceptable only for pure dynamic-link libraries (PySide6, Qt Multimedia, rlottie). CC-BY-SA is acceptable for *assets* (SVG piece sets etc.), never for source-level dependencies. When in doubt, pick a permissive alternative or flag for discussion.
 - Don't commit `dist/`, `build/`, `*.egg-info/`, model weights, or recordings.
 - Don't add speculative abstractions or "future-proofing" beyond what the task requires.

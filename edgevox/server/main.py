@@ -15,19 +15,15 @@ from __future__ import annotations
 import argparse
 import importlib
 import logging
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from edgevox.server.core import ServerCore
 from edgevox.server.ws import handle_connection
 
 log = logging.getLogger(__name__)
-
-STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def _load_agent(spec: str, core: ServerCore) -> tuple[Any, Any]:
@@ -66,23 +62,18 @@ def create_app(core: ServerCore) -> FastAPI:
     async def ws_endpoint(ws: WebSocket):
         await handle_connection(ws, core)
 
-    if STATIC_DIR.exists() and any(STATIC_DIR.iterdir()):
-        app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="spa")
-    else:
-        log.warning(
-            "Static SPA not found at %s — build it with `cd webui && npm run build`. The /ws endpoint still works.",
-            STATIC_DIR,
+    # No SPA — the desktop app is Qt (see ``edgevox.apps.chess_robot_qt``).
+    # ``edgevox-serve`` remains a headless WebSocket API for anyone who
+    # wants to drive the pipeline programmatically.
+    @app.get("/")
+    async def _root():
+        return JSONResponse(
+            {
+                "api": "edgevox",
+                "endpoints": ["/ws", "/api/health", "/api/info"],
+                "desktop_ui": "uv run edgevox-chess-robot",
+            }
         )
-
-        @app.get("/")
-        async def _no_spa():
-            return JSONResponse(
-                {
-                    "error": "SPA not built",
-                    "hint": "cd webui && npm install && npm run build",
-                },
-                status_code=503,
-            )
 
     return app
 

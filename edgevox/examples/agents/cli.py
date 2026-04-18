@@ -71,14 +71,15 @@ def _lazy_subcommands() -> None:
     except ImportError:
         pass
 
-    # Rook — voice chess with an expressive SVG robot face. Starts
-    # ``edgevox-serve`` and opens the React UI on ``?mode=rook``.
+    # RookApp — voice chess against an expressive robot. Native Qt
+    # desktop app; no browser, no server sidecar. Optional install:
+    # ``pip install "edgevox[desktop]"``.
     try:
-        from edgevox.examples.agents.chess_robot.app import main as chess_robot_main
+        from edgevox.apps.chess_robot_qt.main import main as chess_robot_main
 
         _register(
             "chess-robot",
-            "RookApp — voice chess against Rook, an expressive offline robot (browser UI).",
+            "RookApp — native Qt voice chess desktop app (PySide6).",
             chess_robot_main,
         )
     except ImportError:
