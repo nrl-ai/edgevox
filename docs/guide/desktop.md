@@ -38,8 +38,29 @@ present.
 - Rust ≥ 1.75 (https://rustup.rs/)
 - Node.js ≥ 18
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/) on `$PATH`
-- OS-specific Tauri deps: https://tauri.app/start/prerequisites/ (on Linux
-  this includes `libpango`, `libwebkit2gtk-4.1`, `libgtk-3`)
+- OS-specific Tauri deps (https://tauri.app/start/prerequisites/):
+
+**Linux (Ubuntu / Debian):**
+
+```bash
+sudo apt-get install -y \
+    libwebkit2gtk-4.1-dev \
+    libayatana-appindicator3-dev \
+    librsvg2-dev \
+    libsoup-3.0-dev \
+    libpango1.0-dev \
+    libgtk-3-dev \
+    build-essential curl wget file
+```
+
+**macOS:**
+
+```bash
+xcode-select --install
+```
+
+**Windows:** install [Microsoft Edge WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
+and [Visual Studio C++ build tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
 
 ## Dev loop
 
