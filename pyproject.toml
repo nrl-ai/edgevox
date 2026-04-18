@@ -87,6 +87,7 @@ include = ["edgevox*"]
 
 [tool.setuptools.package-data]
 edgevox = ["py.typed"]
+"edgevox.apps.chess_robot_qt" = ["assets/pieces/*.svg", "assets/pieces/ATTRIBUTION.md"]
 
 [project.scripts]
 edgevox = "edgevox.tui:main"

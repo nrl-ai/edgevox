@@ -1,29 +1,26 @@
-"""Chess board widget — QGraphicsView with Unicode pieces.
+"""Chess board widget — QGraphicsView with MIT-licensed SVG pieces.
 
 Click-to-move: click a piece, then click a legal destination square.
-Dots appear on legal squares; captures get a red ring. Moves are
-applied via :meth:`RookBridge.submit_text` using UCI — the same entry
-point as voice/typed moves, so MoveInterceptHook handles everything
-downstream and the LLM narrates.
+Dots appear on legal quiet squares; captures get a red ring. Moves
+are emitted as UCI and forwarded to :meth:`RookBridge.submit_text` by
+the parent window — identical path to voice / typed input, so the
+same ``MoveInterceptHook`` applies each move to the environment.
 
-We keep Unicode piece glyphs rather than SVGs to stay MIT-clean; the
-Cburnett set is lovely but CC-BY-SA which some users prefer to avoid.
+Piece set: Maurizio Monge's "fantasy" (MIT) — see
+``assets/pieces/ATTRIBUTION.md``. SVGs are rendered once each at the
+current square size via ``QSvgRenderer`` and cached as ``QPixmap`` so
+redraws are cheap even on busy animations.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import chess
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import (
-    QBrush,
-    QColor,
-    QFont,
-    QPainter,
-    QPen,
-    QPixmap,
-)
+from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QWidget
 
 if TYPE_CHECKING:
@@ -37,22 +34,15 @@ _LAST_MOVE = QColor(88, 170, 255, 90)
 _LEGAL_DOT = QColor(52, 211, 153, 180)
 _LEGAL_CAPTURE = QColor(239, 68, 68, 180)
 _CHECK = QColor(239, 68, 68, 160)
-_COORD = QColor("#6a7a8d")
+_COORD = QColor("#8d7a64")
 
-_UNICODE = {
-    "K": "\u2654",
-    "Q": "\u2655",
-    "R": "\u2656",
-    "B": "\u2657",
-    "N": "\u2658",
-    "P": "\u2659",
-    "k": "\u265a",
-    "q": "\u265b",
-    "r": "\u265c",
-    "b": "\u265d",
-    "n": "\u265e",
-    "p": "\u265f",
-}
+_PIECE_DIR = Path(__file__).resolve().parent / "assets" / "pieces"
+
+
+def _piece_filename(symbol: str) -> str:
+    """SAN symbol → lichess-style filename. ``K`` → ``wK.svg``, ``k`` → ``bK.svg``."""
+    colour = "w" if symbol.isupper() else "b"
+    return f"{colour}{symbol.upper()}.svg"
 
 
 class ChessBoardView(QGraphicsView):
@@ -65,6 +55,7 @@ class ChessBoardView(QGraphicsView):
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
@@ -75,6 +66,15 @@ class ChessBoardView(QGraphicsView):
         self._selected: str | None = None
         self._legal: dict[str, bool] = {}  # target → is_capture
         self._orientation: str = "white"
+
+        # Preload and cache piece SVG renderers. Pixmap cache is keyed
+        # by (symbol, size) so resizing regenerates once per size.
+        self._renderers: dict[str, QSvgRenderer] = {}
+        self._pixmaps: dict[tuple[str, int], QPixmap] = {}
+        for symbol in "KQRBNPkqrbnp":
+            path = _PIECE_DIR / _piece_filename(symbol)
+            if path.is_file():
+                self._renderers[symbol] = QSvgRenderer(str(path))
 
     # ----- public API -----
 
@@ -93,10 +93,6 @@ class ChessBoardView(QGraphicsView):
         self._orientation = "black" if side.lower().startswith("b") else "white"
         self._redraw()
 
-    def set_enabled_for_user(self, enabled: bool) -> None:
-        """Toggle click acceptance (e.g. disable while Rook is thinking)."""
-        self._interactive = enabled
-
     # ----- layout + rendering -----
 
     def resizeEvent(self, event) -> None:
@@ -104,11 +100,12 @@ class ChessBoardView(QGraphicsView):
         self._redraw()
 
     def _square_size(self) -> float:
-        # Keep the board a centred square inside the view.
         return float(min(self.viewport().width(), self.viewport().height()) / 8)
 
     def _sq_at_point(self, x: float, y: float) -> str | None:
         sz = self._square_size()
+        if sz <= 0:
+            return None
         file_idx = int(x // sz)
         rank_idx = int(y // sz)
         if not (0 <= file_idx < 8 and 0 <= rank_idx < 8):
@@ -133,6 +130,28 @@ class ChessBoardView(QGraphicsView):
             y = rank * sz
         return QRectF(x, y, sz, sz)
 
+    def _piece_pixmap(self, symbol: str, size: int) -> QPixmap | None:
+        """Cached pixmap of the piece's SVG at the target square size."""
+        key = (symbol, size)
+        cached = self._pixmaps.get(key)
+        if cached is not None:
+            return cached
+        renderer = self._renderers.get(symbol)
+        if renderer is None:
+            return None
+        # Draw pieces slightly inset so they don't touch the square edges.
+        pm = QPixmap(QSize(size, size))
+        pm.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        # 6% inset for breathing room.
+        inset = size * 0.06
+        renderer.render(painter, QRectF(inset, inset, size - 2 * inset, size - 2 * inset))
+        painter.end()
+        self._pixmaps[key] = pm
+        return pm
+
     def _redraw(self) -> None:
         self._scene.clear()
         sz = self._square_size()
@@ -141,28 +160,24 @@ class ChessBoardView(QGraphicsView):
         self._scene.setSceneRect(0, 0, sz * 8, sz * 8)
         self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
-        # Squares
         last_from = last_to = None
         if self._state and self._state.last_move_uci:
             uci = self._state.last_move_uci
             last_from, last_to = uci[0:2], uci[2:4]
 
+        # Squares + last-move + selection tints.
         for rank in range(8):
             for file in range(8):
                 sq = chess.square_name(chess.square(file, rank))
                 rect = self._sq_to_rect(sq)
                 base = _LIGHT if (file + rank) % 2 else _DARK
-                self._scene.addRect(
-                    rect,
-                    QPen(Qt.PenStyle.NoPen),
-                    QBrush(base),
-                )
+                self._scene.addRect(rect, QPen(Qt.PenStyle.NoPen), QBrush(base))
                 if sq in (last_from, last_to):
                     self._scene.addRect(rect, QPen(Qt.PenStyle.NoPen), QBrush(_LAST_MOVE))
                 if self._selected == sq:
                     self._scene.addRect(rect, QPen(Qt.PenStyle.NoPen), QBrush(_SELECTED))
 
-        # Legal-move hints
+        # Legal-move hints.
         for target, is_capture in self._legal.items():
             rect = self._sq_to_rect(target)
             if is_capture:
@@ -174,39 +189,36 @@ class ChessBoardView(QGraphicsView):
                 dot = rect.adjusted(sz * 0.35, sz * 0.35, -sz * 0.35, -sz * 0.35)
                 self._scene.addEllipse(dot, QPen(Qt.PenStyle.NoPen), QBrush(_LEGAL_DOT))
 
-        # Check highlight on own king
+        # Check highlight.
         if self._board.is_check():
             king_sq = self._board.king(self._board.turn)
             if king_sq is not None:
-                king_name = chess.square_name(king_sq)
-                rect = self._sq_to_rect(king_name)
+                rect = self._sq_to_rect(chess.square_name(king_sq))
                 pen = QPen(_CHECK)
                 pen.setWidthF(sz * 0.06)
                 self._scene.addRect(rect, pen, QBrush(Qt.BrushStyle.NoBrush))
 
-        # Pieces
-        font = QFont("DejaVu Sans", int(sz * 0.68))
+        # Pieces — render each SVG into a cached pixmap.
+        piece_size = int(sz)
         for square in chess.SQUARES:
             piece = self._board.piece_at(square)
             if piece is None:
                 continue
-            glyph = _UNICODE.get(piece.symbol(), "?")
+            pm = self._piece_pixmap(piece.symbol(), piece_size)
+            if pm is None:
+                continue
+            item = self._scene.addPixmap(pm)
             rect = self._sq_to_rect(chess.square_name(square))
-            text = self._scene.addText(glyph, font)
-            br = text.boundingRect()
-            text.setPos(
-                rect.x() + (rect.width() - br.width()) / 2,
-                rect.y() + (rect.height() - br.height()) / 2,
-            )
-            text.setDefaultTextColor(QColor("#111") if piece.color else QColor("#f8f8f8"))
+            item.setPos(rect.x(), rect.y())
 
-        # Coordinate labels — a / h files on bottom edge, 1 / 8 on sides.
-        label_font = QFont("monospace", int(sz * 0.14))
+        # Coordinate labels — a/h files along the bottom edge, 1-8 on
+        # the left. Tiny, in-board, lichess style.
+        label_font = QFont("monospace", max(7, int(sz * 0.13)))
         for i in range(8):
             file_label = "abcdefgh"[i] if self._orientation == "white" else "abcdefgh"[7 - i]
             t = self._scene.addText(file_label, label_font)
             t.setDefaultTextColor(_COORD)
-            t.setPos(i * sz + sz * 0.08, 8 * sz - sz * 0.25)
+            t.setPos(i * sz + sz * 0.72, 8 * sz - sz * 0.28)
             rank_label = str(8 - i) if self._orientation == "white" else str(i + 1)
             rt = self._scene.addText(rank_label, label_font)
             rt.setDefaultTextColor(_COORD)
@@ -224,20 +236,16 @@ class ChessBoardView(QGraphicsView):
             piece = self._board.piece_at(chess.parse_square(sq))
             if piece is None or piece.color != self._board.turn:
                 return super().mousePressEvent(event)
-            # If the engine is to move, don't allow the user to click.
-            # We surface interactivity by whoever is to move == user side.
-            if self._state is not None:
-                user_is_white = self._state.turn == "white" and self._is_user_turn()
-                user_is_black = self._state.turn == "black" and self._is_user_turn()
-                if not (user_is_white or user_is_black):
-                    return super().mousePressEvent(event)
+            # If it's not the user's turn (engine to move), don't let
+            # them click — the bridge will reject the move anyway.
+            if self._state is not None and self._state.turn != self._orientation:
+                return super().mousePressEvent(event)
             self._selected = sq
-            self._legal = {}
-            for move in self._board.legal_moves:
-                if chess.square_name(move.from_square) == sq:
-                    target = chess.square_name(move.to_square)
-                    is_capture = self._board.is_capture(move)
-                    self._legal[target] = is_capture
+            self._legal = {
+                chess.square_name(m.to_square): self._board.is_capture(m)
+                for m in self._board.legal_moves
+                if chess.square_name(m.from_square) == sq
+            }
             self._redraw()
             return
 
@@ -249,8 +257,6 @@ class ChessBoardView(QGraphicsView):
 
         if sq in self._legal:
             uci = f"{self._selected}{sq}"
-            # Pawn promotion → queen by default. Users who want to
-            # under-promote can speak "promote to knight" etc.
             src_piece = self._board.piece_at(chess.parse_square(self._selected))
             if (
                 src_piece
@@ -264,32 +270,20 @@ class ChessBoardView(QGraphicsView):
             self.move_requested.emit(uci)
             return
 
-        # Clicked another piece of the same colour → re-select.
         piece = self._board.piece_at(chess.parse_square(sq))
         if piece is not None and piece.color == self._board.turn:
             self._selected = sq
-            self._legal = {}
-            for move in self._board.legal_moves:
-                if chess.square_name(move.from_square) == sq:
-                    self._legal[chess.square_name(move.to_square)] = self._board.is_capture(move)
+            self._legal = {
+                chess.square_name(m.to_square): self._board.is_capture(m)
+                for m in self._board.legal_moves
+                if chess.square_name(m.from_square) == sq
+            }
             self._redraw()
             return
 
         self._selected = None
         self._legal = {}
         self._redraw()
-
-    def _is_user_turn(self) -> bool:
-        """Very coarse heuristic: the view is interactive only while
-        the user's side has the move. We infer it from ChessState.turn
-        + the user_side prop plumbed via ``set_orientation`` for now."""
-        if self._state is None:
-            return True
-        return self._state.turn == self._orientation
-
-
-# Re-export for downstream type hints without a circular import.
-_ = QPixmap
 
 
 __all__ = ["ChessBoardView"]
