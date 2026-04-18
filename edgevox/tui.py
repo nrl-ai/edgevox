@@ -1469,20 +1469,26 @@ class EdgeVoxApp(App):
                 break
 
             elif isinstance(frame, TranscriptionFrame):
-                ts = datetime.now().strftime("%H:%M:%S")
-                self._chat_log.append((ts, "You", frame.text))
-                self.call_from_thread(
-                    chat.write,
-                    Text.assemble(
-                        ("\u2500" * 60 + "\n", "#1e3a2e"),
-                        (" \u25b6 You ", "bold #00ff88"),
-                        (f"{ts}", "dim"),
-                        (f"  {frame.audio_duration:.1f}s speech \u2192 STT {frame.stt_time:.2f}s\n", "#1e3a2e"),
-                        (f"   {frame.text}\n", "#c9d1d9"),
-                    ),
-                )
-                if self._bridge:
-                    self._bridge.publish_transcription(frame.text)
+                # Typed input is pre-rendered by ``_handle_text_chat`` with a
+                # "typed" header and injected into the pipeline as a zero-duration
+                # TranscriptionFrame. Only voice transcriptions (audio_duration > 0)
+                # need the STT-style header here, otherwise the chat shows the
+                # message twice.
+                if frame.audio_duration > 0:
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    self._chat_log.append((ts, "You", frame.text))
+                    self.call_from_thread(
+                        chat.write,
+                        Text.assemble(
+                            ("\u2500" * 60 + "\n", "#1e3a2e"),
+                            (" \u25b6 You ", "bold #00ff88"),
+                            (f"{ts}", "dim"),
+                            (f"  {frame.audio_duration:.1f}s speech \u2192 STT {frame.stt_time:.2f}s\n", "#1e3a2e"),
+                            (f"   {frame.text}\n", "#c9d1d9"),
+                        ),
+                    )
+                    if self._bridge:
+                        self._bridge.publish_transcription(frame.text)
                 self.call_from_thread(setattr, status, "state", BotState.THINKING)
                 if self._bridge:
                     self._bridge.publish_state("thinking")

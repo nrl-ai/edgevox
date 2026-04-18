@@ -314,10 +314,6 @@ class MujocoArmEnvironment:
         self._grasp_target: str | None = None
         self._grasp_phase: str | None = None
 
-        self._phys_stop = threading.Event()
-        self._phys_thread = threading.Thread(target=self._physics_loop, name="mujoco-physics", daemon=True)
-        self._phys_thread.start()
-
         # ``launch_passive`` can segfault at the C level on broken Linux
         # GL stacks (Wayland+NVIDIA, WSLg, remote X). A subprocess probe
         # tests GLFW context creation first so a crash in the probe

@@ -1,11 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-  <rect width="48" height="48" rx="11" fill="#2d2d2d"/>
-
-  <!-- E letterform -->
-  <path d="M15 13 L15 35 L29 35" stroke="#2ecc71" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <path d="M15 13 L29 13" stroke="#2ecc71" stroke-width="3" stroke-linecap="round"/>
-  <path d="M15 24 L26 24" stroke="#2ecc71" stroke-width="3" stroke-linecap="round"/>
-
-  <!-- Sound wave -->
-  <path d="M33 18 C36 22, 36 26, 33 30" stroke="#2ecc71" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.6"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#0f172a"/>
+  <g fill="#22c55e">
+    <rect x="114" y="228" width="40" height="56" rx="20"/>
+    <rect x="174" y="188" width="40" height="136" rx="20"/>
+    <rect x="234" y="132" width="40" height="248" rx="20"/>
+    <rect x="294" y="168" width="40" height="176" rx="20"/>
+    <rect x="354" y="208" width="40" height="96" rx="20"/>
+  </g>
 </svg>
