@@ -21,6 +21,7 @@ sensor data, a background planner reacting to user utterances, etc.).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import threading
@@ -448,8 +449,6 @@ class BackgroundAgent:
         self._thread = t
 
     def stop(self, *, timeout: float = 2.0) -> None:
-        import contextlib
-
         self._stop.set()
         # Kick the queue so a waiting ``get`` returns promptly.
         with contextlib.suppress(queue.Full):

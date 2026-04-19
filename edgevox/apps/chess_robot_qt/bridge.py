@@ -36,19 +36,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QStandardPaths, QThreadPool, Signal, Slot
 
 from edgevox.agents import AgentContext, LLMAgent
-from edgevox.agents.hooks import AFTER_LLM, BEFORE_LLM, ON_RUN_END
 from edgevox.agents.hooks_builtin import (
     ContextCompactionHook,
+    DebugTapHook,
     MemoryInjectionHook,
     NotesInjectorHook,
     PersistSessionHook,
     TokenBudgetHook,
 )
 from edgevox.agents.interrupt import InterruptController
-from edgevox.agents.memory import Compactor, JSONMemoryStore, NotesFile
+from edgevox.agents.memory import Compactor, NotesFile, SQLiteMemoryStore
 from edgevox.examples.agents.chess_robot.face_hook import RobotFaceHook
 from edgevox.examples.agents.chess_robot.move_intercept import MoveInterceptHook
 from edgevox.examples.agents.chess_robot.rich_board import RichChessAnalyticsHook
@@ -80,13 +80,9 @@ def _data_dir() -> Path:
     platform. Falls back to ``~/.rookapp`` if QStandardPaths returns an
     empty string (headless CI builds sometimes do).
     """
-    from pathlib import Path as _P
-
-    from PySide6.QtCore import QStandardPaths
-
     # AppDataLocation already appends the org + app names we set in main().
     base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
-    path = _P(base) if base else _P.home() / ".rookapp"
+    path = Path(base) if base else Path.home() / ".rookapp"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -102,6 +98,40 @@ def _try_session_store(path: Path):
     except Exception:
         log.debug("JSONSessionStore unavailable; sessions won't persist", exc_info=True)
         return None
+
+
+def _migrate_legacy_memory(data_dir: Path, store: SQLiteMemoryStore) -> None:
+    """Move a pre-SQLite ``memory.json`` into the new store.
+
+    Older RookApp installs wrote memory to ``memory.json``; the SQLite
+    migration happens transparently on first open of the new store:
+    facts / preferences / episodes are replayed through the Protocol,
+    then the legacy file is renamed to ``memory.json.migrated`` so a
+    second launch doesn't re-import duplicates. Idempotent and safe to
+    call on fresh installs (no-op when there's no legacy file).
+    """
+    legacy = data_dir / "memory.json"
+    if not legacy.exists():
+        return
+    try:
+        from edgevox.agents.memory import JSONMemoryStore as _Legacy
+
+        old = _Legacy(legacy)
+        for f in old.facts():
+            # Skip facts the SQLite store already knows about; the
+            # legacy file may have been migrated partially on a prior
+            # crashed run.
+            if store.get_fact(f.key, scope=f.scope) is not None:
+                continue
+            store.add_fact(f.key, f.value, scope=f.scope, source=f.source)
+        for p in old.preferences():
+            store.set_preference(p.key, p.value)
+        for e in old.recent_episodes(n=500):
+            store.add_episode(e.kind, e.payload, e.outcome, agent=e.agent)
+        legacy.rename(legacy.with_suffix(".json.migrated"))
+        log.info("migrated legacy memory.json to SQLite")
+    except Exception:
+        log.exception("legacy memory migration failed (non-fatal)")
 
 
 @dataclass
@@ -139,57 +169,6 @@ class RookConfig:
         if v := os.environ.get("EDGEVOX_CHESS_MAIA_WEIGHTS"):
             cfg.maia_weights = v
         return cfg
-
-
-class _DebugTapHook:
-    """Tap the agent loop at ``before_llm`` / ``after_llm`` / ``on_run_end``
-    and emit the payload as a synthetic :class:`AgentEvent` with
-    ``kind="rook_debug"``. The bridge forwards the event to a Qt signal
-    only when ``debug_mode`` is on — so the hook is always installed
-    (zero-cost path when off) but the UI only fills with debug bubbles
-    when the user asks for them.
-
-    Debug kinds emitted:
-
-    - ``"messages"`` at BEFORE_LLM — full messages array sent to the
-      LLM this hop (after every upstream hook has mutated it). Lets
-      you verify the briefing, memory block, and system prompt landed.
-    - ``"raw_reply"`` at AFTER_LLM — the model's unmodified output,
-      before :class:`ThinkTagStripHook` / :class:`VoiceCleanupHook` /
-      :class:`SentenceClipHook` sanitise it. Shows reasoning in
-      ``<think>`` blocks and any JSON the model tried to emit.
-    - ``"final_reply"`` at ON_RUN_END — the sanitised text the user
-      actually sees / hears.
-    """
-
-    points = frozenset({BEFORE_LLM, AFTER_LLM, ON_RUN_END})
-
-    def __init__(self, bridge: RookBridge) -> None:
-        # Weak-ish reference — bridge owns the hook, so a hard ref
-        # would create a cycle bridge → agent → hooks → bridge, but
-        # the cycle is fine here because both live for the process
-        # lifetime and neither holds OS resources that need a __del__.
-        self._bridge = bridge
-
-    def __call__(self, point: str, ctx: AgentContext, payload: Any) -> None:
-        # No-op when debug mode is off — keeps the steady-state cost
-        # to a single attribute read + dict lookup per fire point.
-        if not self._bridge._debug_mode:
-            return
-        try:
-            if point == BEFORE_LLM and isinstance(payload, dict):
-                messages = payload.get("messages") or []
-                ctx.emit("rook_debug", "rook", {"kind": "messages", "messages": messages})
-            elif point == AFTER_LLM and isinstance(payload, dict):
-                raw = payload.get("content") or payload.get("reply") or ""
-                if raw:
-                    ctx.emit("rook_debug", "rook", {"kind": "raw_reply", "text": str(raw)})
-            elif point == ON_RUN_END and isinstance(payload, dict):
-                reply = payload.get("reply")
-                if reply:
-                    ctx.emit("rook_debug", "rook", {"kind": "final_reply", "text": str(reply)})
-        except Exception:
-            log.exception("DebugTapHook failed (non-fatal)")
 
 
 class _Signals(QObject):
@@ -250,15 +229,16 @@ class RookBridge:
         # Paths retained so ``clear_memory`` can unlink backing files
         # for stores with no explicit ``.clear()`` method.
         self._data_dir: Path | None = None
-        self._memory: JSONMemoryStore | None = None
+        self._memory: SQLiteMemoryStore | None = None
         self._notes: NotesFile | None = None
         self._sessions = None
         self._game_path: Path | None = None
-        # Debug-mode flag. Read by :class:`_DebugTapHook` per fire
-        # point, flipped live via :meth:`set_debug_mode`. The hook is
-        # always installed; the flag controls whether it emits
-        # anything. Keeps the cost off the hot path when debugging is
-        # off without requiring an agent rebuild.
+        # Debug-mode flag. Read per fire point by the installed
+        # :class:`DebugTapHook` via a predicate closure, flipped live
+        # via :meth:`set_debug_mode`. The hook is always installed; the
+        # flag controls whether it emits anything. Keeps the cost off
+        # the hot path when debugging is off without requiring an agent
+        # rebuild.
         self._debug_mode = False
 
     # ----- lifecycle -----
@@ -386,10 +366,10 @@ class RookBridge:
     def set_debug_mode(self, on: bool) -> None:
         """Toggle inline-in-chat logging of LLM input + raw reply.
 
-        Flips a flag read by :class:`_DebugTapHook` on every fire
-        point — no agent rebuild, no restart. Safe to call before the
-        bridge has finished loading (the hook reads this attribute at
-        call time, not init).
+        Flips a flag read by the installed :class:`DebugTapHook` on
+        every fire point — no agent rebuild, no restart. Safe to call
+        before the bridge has finished loading (the hook reads this
+        attribute at call time, not init).
         """
         self._debug_mode = bool(on)
 
@@ -427,14 +407,18 @@ class RookBridge:
                 self._notes.clear()
             except Exception:
                 log.exception("notes.clear failed")
-        # JSONMemoryStore has no public clear() — unlink the backing
-        # file and rebuild an empty instance in place.
+        # SQLiteMemoryStore has no public clear() — close the handle,
+        # unlink the DB file (and its WAL / SHM sidecars), rebuild an
+        # empty instance in place. WAL artefacts are safe to delete
+        # after close().
         if self._memory is not None and self._data_dir is not None:
             try:
-                mem_path = self._data_dir / "memory.json"
-                if mem_path.exists():
-                    mem_path.unlink()
-                self._memory = JSONMemoryStore(mem_path)
+                self._memory.close()
+                for suffix in ("", "-wal", "-shm"):
+                    p = self._data_dir / f"memory.db{suffix}"
+                    if p.exists():
+                        p.unlink()
+                self._memory = SQLiteMemoryStore(self._data_dir / "memory.db")
             except Exception:
                 log.exception("memory wipe failed")
         # Drop the persisted session so the next launch starts clean
@@ -525,10 +509,13 @@ class RookBridge:
         if self._data_dir is None:
             return
         try:
-            mem_path = self._data_dir / "memory.json"
-            if mem_path.exists():
-                mem_path.unlink()
-                self._memory = JSONMemoryStore(mem_path)
+            if self._memory is not None:
+                self._memory.close()
+            for suffix in ("", "-wal", "-shm"):
+                p = self._data_dir / f"memory.db{suffix}"
+                if p.exists():
+                    p.unlink()
+            self._memory = SQLiteMemoryStore(self._data_dir / "memory.db")
         except Exception:
             log.exception("stale memory wipe failed")
         if self._sessions is not None:
@@ -538,7 +525,7 @@ class RookBridge:
                 log.exception("stale session wipe failed")
 
     def _rebind_memory_hooks(self) -> None:
-        """After ``clear_memory`` swaps the JSONMemoryStore, walk the
+        """After ``clear_memory`` swaps the SQLiteMemoryStore, walk the
         agent's hook list and point MemoryInjectionHook at the new
         store so the next turn's context renders the empty memory.
         Hooks that take a store by reference otherwise keep the old,
@@ -560,7 +547,7 @@ class RookBridge:
             self._emit_debug(payload or {})
 
     def _emit_debug(self, payload: dict) -> None:
-        """Render a ``_DebugTapHook`` payload as a (title, body) pair
+        """Render a ``DebugTapHook`` payload as a (title, body) pair
         for the chat. Gated by ``debug_mode`` so stale events from a
         lingering worker don't spam the UI after the user toggles it
         off."""
@@ -636,7 +623,12 @@ class RookBridge:
             # %APPDATA%/EdgeVox/RookApp on Windows).
             data_dir = _data_dir()
             self._data_dir = data_dir
-            self._memory = JSONMemoryStore(data_dir / "memory.json")
+            # SQLiteMemoryStore is crash-safe (WAL-mode atomic writes)
+            # and multi-process-safe, so a kill-9 mid-turn can't lose
+            # the fact rook just learned. A legacy ``memory.json`` from
+            # older installs is migrated lazily on first open.
+            self._memory = SQLiteMemoryStore(data_dir / "memory.db")
+            _migrate_legacy_memory(data_dir, self._memory)
             self._notes = NotesFile(data_dir / "notes.md")
             self._sessions = _try_session_store(data_dir / "sessions.json")
             self._game_path = data_dir / "game.json"
@@ -678,8 +670,14 @@ class RookBridge:
                 *default_slm_hooks(),
                 # Always installed, no-ops unless ``self._debug_mode`` is
                 # on. Kept last so it observes the fully-composed payload
-                # after every other hook has mutated it.
-                _DebugTapHook(self),
+                # after every other hook has mutated it. Uses
+                # ``event_kind="rook_debug"`` so the existing chat-bubble
+                # renderer picks the events up unchanged.
+                DebugTapHook(
+                    enabled=lambda: self._debug_mode,
+                    event_kind="rook_debug",
+                    source="rook",
+                ),
             ]
             if self._sessions is not None:
                 hooks.append(PersistSessionHook(session_store=self._sessions, session_id=_SESSION_ID))

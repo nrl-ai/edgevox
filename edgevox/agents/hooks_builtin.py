@@ -608,6 +608,68 @@ class EchoingHook:
         return None
 
 
+class DebugTapHook:
+    """Tap the agent loop and publish the payloads as structured events.
+
+    Emits three payloads per turn:
+
+    - ``{"kind": "messages", "messages": [...]}`` at ``before_llm`` — the
+      full messages array the LLM is about to see, *after* every upstream
+      hook has mutated it. Lets you verify briefings, memory blocks, and
+      system prompts landed as intended.
+    - ``{"kind": "raw_reply", "text": str}`` at ``after_llm`` — the
+      model's unmodified output before downstream sanitisers
+      (think-tag stripping, voice cleanup, sentence clipping) run.
+    - ``{"kind": "final_reply", "text": str}`` at ``on_run_end`` — the
+      sanitised text that the user actually sees / hears.
+
+    Events are published via ``ctx.emit(event_kind, source, payload)`` so
+    any UI — Qt chat bubble, TUI panel, WebSocket debug pane, plain log
+    — can subscribe without knowing about the hook itself.
+
+    The hook is intended to always be installed. Pass a ``enabled``
+    predicate (callable) to gate emission live without rebuilding the
+    agent; when ``enabled`` is off the hook does a single attribute read
+    per fire point and returns.
+    """
+
+    points = frozenset({BEFORE_LLM, AFTER_LLM, ON_RUN_END})
+
+    def __init__(
+        self,
+        *,
+        enabled: bool | Callable[[], bool] = True,
+        event_kind: str = "agent_debug",
+        source: str = "debug",
+    ) -> None:
+        self._enabled = enabled
+        self.event_kind = event_kind
+        self.source = source
+
+    def _is_on(self) -> bool:
+        e = self._enabled
+        return bool(e() if callable(e) else e)
+
+    def __call__(self, point: str, ctx: AgentContext, payload: Any) -> HookResult | None:
+        if not self._is_on():
+            return None
+        try:
+            if point == BEFORE_LLM and isinstance(payload, dict):
+                messages = payload.get("messages") or []
+                ctx.emit(self.event_kind, self.source, {"kind": "messages", "messages": messages})
+            elif point == AFTER_LLM and isinstance(payload, dict):
+                raw = payload.get("content") or payload.get("reply") or ""
+                if raw:
+                    ctx.emit(self.event_kind, self.source, {"kind": "raw_reply", "text": str(raw)})
+            elif point == ON_RUN_END and isinstance(payload, dict):
+                reply = payload.get("reply")
+                if reply:
+                    ctx.emit(self.event_kind, self.source, {"kind": "final_reply", "text": str(reply)})
+        except Exception:
+            log.exception("DebugTapHook failed (non-fatal)")
+        return None
+
+
 # ===========================================================================
 # Helpers
 # ===========================================================================
@@ -639,6 +701,7 @@ __all__ = [
     "AuditLogHook",
     "ContextCompactionHook",
     "ContextWindowManager",
+    "DebugTapHook",
     "EchoingHook",
     "EpisodeLoggerHook",
     "MemoryInjectionHook",

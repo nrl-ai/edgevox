@@ -31,14 +31,29 @@ flowchart LR
 
 ## `MemoryStore`
 
-A `Protocol`; two implementations ship:
+A `Protocol`; three implementations ship:
 
 | Class | Backing | Use case |
 |---|---|---|
 | `JSONMemoryStore` | debounced JSON file | default; simple, human-readable, thread-safe |
 | `SQLiteMemoryStore` | stdlib `sqlite3` + WAL mode | crash-safe (immediate atomic writes), multi-process-safe, queryable |
+| `VectorMemoryStore` | `sqlite-vec` extension + injectable `embed_fn` | semantic retrieval over facts — `store.search_facts("what's safe to cook?", k=3)` |
 
-Both share the same bi-temporal semantics and render-for-prompt layout, so swapping stores doesn't change what the LLM sees. Write your own backend (Redis, vector DB, …) by implementing the `MemoryStore` Protocol.
+All three share the same bi-temporal semantics and render-for-prompt layout, so swapping stores doesn't change what the LLM sees. `VectorMemoryStore` is in the `[memory-vec]` extra; the embedding model is user-supplied via `embed_fn=...` (e.g. `llama_embed(llm)` to reuse a `llama-cpp` instance loaded with `embedding=True`).
+
+```python
+from edgevox.llm.llamacpp import LLM
+from edgevox.agents import VectorMemoryStore, llama_embed
+
+llm = LLM(model_path="nomic-embed-text-v1.5.Q4_K_M.gguf", embedding=True)
+store = VectorMemoryStore("./vec.db", embed_fn=llama_embed(llm))
+store.add_fact("user.allergies", "peanuts, shellfish")
+store.add_fact("kitchen.fridge.contents", "milk, eggs, cheese")
+for fact, distance in store.search_facts("what's safe to cook?", k=3):
+    print(f"{distance:.3f}  {fact.key}: {fact.value}")
+```
+
+Write your own backend (Redis, Mongo, remote HTTP, …) by implementing the `MemoryStore` Protocol — the four built-in hooks that consume a store (`MemoryInjectionHook`, `NotesInjectorHook`, `PersistSessionHook`, `ContextCompactionHook`) read through the Protocol, never the concrete class.
 
 ### Data model
 

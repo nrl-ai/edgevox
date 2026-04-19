@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -564,8 +565,6 @@ class SQLiteMemoryStore:
     )
 
     def __init__(self, path: str | Path) -> None:
-        import sqlite3
-
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -940,8 +939,6 @@ class SQLiteSessionStore:
     """
 
     def __init__(self, path: str | Path) -> None:
-        import sqlite3
-
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # ``check_same_thread=False`` + a lock = thread-safe shared

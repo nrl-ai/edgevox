@@ -102,6 +102,11 @@ from edgevox.agents.memory import (
     estimate_tokens,
     new_session_id,
 )
+from edgevox.agents.memory_vec import (
+    EmbedFn,
+    VectorMemoryStore,
+    llama_embed,
+)
 from edgevox.agents.multiagent import (
     AgentMessage,
     AgentPool,
@@ -114,6 +119,13 @@ from edgevox.agents.multiagent import (
 )
 from edgevox.agents.sim import SimEnvironment, ToyWorld
 from edgevox.agents.skills import GoalHandle, GoalStatus, Skill, skill
+from edgevox.agents.vad_watchers import (
+    BargeInVADWatcher,
+    SileroVADWatcher,
+    TENVADWatcher,
+    WebRTCVADWatcher,
+    create_vad_watcher,
+)
 from edgevox.agents.workflow import (
     Fallback,
     Loop,
@@ -144,11 +156,13 @@ __all__ = [
     "ArtifactStore",
     "AuditLogHook",
     "BackgroundAgent",
+    "BargeInVADWatcher",
     "Blackboard",
     "Compactor",
     "ContextCompactionHook",
     "ContextWindowManager",
     "EchoingHook",
+    "EmbedFn",
     "EnergyBargeInWatcher",
     "Episode",
     "EpisodeLoggerHook",
@@ -189,9 +203,11 @@ __all__ = [
     "Sequence",
     "Session",
     "SessionStore",
+    "SileroVADWatcher",
     "SimEnvironment",
     "Skill",
     "Supervisor",
+    "TENVADWatcher",
     "Timeout",
     "TimingHook",
     "TokenBudgetHook",
@@ -199,6 +215,8 @@ __all__ = [
     "ToolOutputTruncatorHook",
     "ToyWorld",
     "Trigger",
+    "VectorMemoryStore",
+    "WebRTCVADWatcher",
     "bytes_artifact",
     "console_approver",
     "debounce_trigger",

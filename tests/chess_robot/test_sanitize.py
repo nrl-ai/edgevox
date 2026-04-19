@@ -5,6 +5,7 @@ from __future__ import annotations
 from edgevox.agents.base import AgentContext
 from edgevox.agents.hooks import AFTER_LLM
 from edgevox.examples.agents.chess_robot.sanitize import (
+    BriefingLeakGuard,
     SentenceClipHook,
     ThinkTagStripHook,
     VoiceCleanupHook,
@@ -157,6 +158,66 @@ class TestSentenceClipHook:
         hook = SentenceClipHook(max_sentences=2)
         out = _run(hook, "one blob no punctuation here")
         assert out == "one blob no punctuation here"
+
+
+class TestBriefingLeakGuard:
+    def test_strips_full_bracketed_block(self):
+        hook = BriefingLeakGuard()
+        content = (
+            "Good luck!\n"
+            "[CHESS BRIEFING — internal context, do not read aloud verbatim]\n"
+            "Position (FEN): rnbqkbnr/...\n"
+            "[END BRIEFING]"
+        )
+        out = _run(hook, content)
+        assert "[CHESS BRIEFING" not in out
+        assert "[END BRIEFING]" not in out
+        assert "Position (FEN):" not in out
+        assert out.startswith("Good luck!")
+
+    def test_strips_headerless_leak(self):
+        """Reproduces the RookApp opening-move leak: model drops the
+        ``[CHESS BRIEFING ...]`` marker but parrots the body and the
+        closing marker. Guard must still catch it."""
+        hook = BriefingLeakGuard()
+        content = (
+            "\"Hey, let's start a new game. I'm ready to play.\"\n"
+            "You (Rook) are playing the BLACK pieces. The user is playing WHITE. "
+            "Any sentence starting with 'You' / 'your' refers to Rook (black); "
+            "any sentence about 'the user' refers to white.\n"
+            "Position (FEN): rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\n"
+            "To move: white — the user's\n"
+            "Phase: opening\n"
+            "Material: material is even\n"
+            "Evaluation: evaluation unavailable\n"
+            "King safety: white uncastled (king still on e1); black uncastled (king still on e8)\n"
+            "Last move: no last move (starting position)\n"
+            "Engine-top top line: e4 e5 Nf3\n"
+            "[END BRIEFING]"
+        )
+        out = _run(hook, content)
+        assert "You (Rook) are playing" not in out
+        assert "Position (FEN):" not in out
+        assert "[END BRIEFING]" not in out
+        assert "ready to play" in out
+
+    def test_strips_dangling_end_marker_only(self):
+        hook = BriefingLeakGuard()
+        out = _run(hook, "Your move. [END BRIEFING]")
+        assert "[END BRIEFING]" not in out
+        assert out.startswith("Your move.")
+
+    def test_empty_result_gets_filler(self):
+        hook = BriefingLeakGuard()
+        content = "[CHESS BRIEFING]\nPosition (FEN): x\n[END BRIEFING]"
+        out = _run(hook, content)
+        assert out  # non-empty filler
+        assert "[CHESS BRIEFING" not in out
+
+    def test_no_briefing_passthrough(self):
+        hook = BriefingLeakGuard()
+        content = "I'll play the French. Your move."
+        assert _run(hook, content) == content
 
 
 class TestHookPointRegistration:

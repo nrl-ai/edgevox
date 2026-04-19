@@ -148,9 +148,29 @@ This is what stopped the "interrupt only works once" failure mode where the reco
 
 ## VAD backends
 
-The only shipped barge-in watcher is `EnergyBargeInWatcher` — pure RMS threshold with echo-floor calibration + reference-signal gate, numpy-optional. The production pipeline uses Silero VAD on AEC-cleaned audio inside `AudioRecorder` (not this watcher) — `EnergyBargeInWatcher` is for users who write their own pipelines and want a dependency-free default.
+Four watchers ship today, all implementing the `BargeInVADWatcher` Protocol:
 
-If you need something more robust than RMS, wrap your own watcher behind the `BargeInVADWatcher` interface and plug it in via `InterruptController(watchers=[...])`.
+| Backend | Class | Install | Latency | Notes |
+|---|---|---|---|---|
+| Energy | `EnergyBargeInWatcher` | built-in | <1 ms | pure RMS threshold; no deps. 5-15% false triggers in noisy rooms |
+| WebRTC | `WebRTCVADWatcher` | `edgevox[voice-vad]` (BSD) | <1 ms | Google's GMM baseline; much better than RMS |
+| Silero v6 | `SileroVADWatcher` | no extra install | ~1 ms | reuses the ONNX already bundled with faster-whisper; same model the production `AudioRecorder` uses, so no new download |
+| TEN | `TENVADWatcher` | onnxruntime (core dep) | <1 ms | 306 KB Apache-2 model from Tencent; fetched from `nrl-ai/edgevox-models` with fallback to `TEN-framework/ten-vad` upstream |
+
+Pick one directly, or use the factory:
+
+```python
+from edgevox.agents import create_vad_watcher
+
+watcher = create_vad_watcher(
+    "silero",                  # or "energy" / "webrtc" / "ten"
+    controller,
+    is_tts_playing=player.is_playing,
+)
+threading.Thread(target=watcher.run, args=(mic_stream,), daemon=True).start()
+```
+
+All four share the echo-defence scaffolding — sustained-speech window (default 120 ms), TTS-release refractory (default 180 ms) — so switching backends doesn't change barge-in behaviour, only the speech/non-speech classifier. `BargeInVADWatcher` is a `runtime_checkable` Protocol; your own watcher just needs a `run(frames)` method and a `stop()` flag.
 
 ## Subscribing to events
 

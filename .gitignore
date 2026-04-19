@@ -100,5 +100,7 @@ secrets/
 .claude/
 
 
+# ---- Misc ----
 webui/test_results/
 webui/tsconfig.tsbuildinfo
+.playwright-mcp/

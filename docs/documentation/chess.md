@@ -52,7 +52,7 @@ Write a new backend by implementing the `ChessEngine` protocol in
 ```mermaid
 flowchart LR
     U[User voice / text] --> LLM
-    LLM -->|@tool call| Env[ChessEnvironment]
+    LLM -->|"@tool call"| Env[ChessEnvironment]
     Env -->|UCI subprocess| E[Stockfish / LC0]
     Env -->|subscribe| TUI[Textual ChessPanel]
     Env -->|subscribe + ws.send_json| Web[React ChessBoard / EvalBar / MoveList]

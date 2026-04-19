@@ -86,6 +86,7 @@ Avoid reaching into private modules or `_agent_harness.py` directly.
 - **No trailing summaries in code comments.** Comment the *why*, not the *what*.
 - **Type hints on public functions.** Internal helpers may skip them when obvious.
 - **No prints in library code.** Use `rich`/`textual` for user-facing output, `logging` for diagnostics.
+- **Imports go at the top of the file.** Only push an import inside a function when something concrete forces it — circular-import break, optional/heavy dependency behind a capability check, or lazy-load to shave CLI startup latency. Convenience or "it's only used in one place" is not a reason; move it up.
 - **No new top-level dependencies without reason.** Prefer the stdlib. If you must add one, update `pyproject.toml`.
 - **Hardware-aware code paths must degrade gracefully** — CUDA/Metal/CPU fallbacks, never crash on missing accelerator.
 - **Never commit model files** (`.gguf`, `.onnx`, `.bin`, weights). They live under `models/` which is gitignored.
@@ -114,6 +115,13 @@ Avoid reaching into private modules or `_agent_harness.py` directly.
 - Prefer editing existing files over creating new ones; don't create README/docs files unless asked.
 - If a change touches the streaming pipeline, manually note the latency impact in the PR description.
 - **Prefer Mermaid diagrams over ASCII art** in any markdown doc (`docs/`, `website/`, `README.md`, PR descriptions). GitHub and VitePress render ```mermaid``` fenced blocks natively; hand-drawn box-and-line ASCII is harder to read, impossible to edit cleanly, and breaks under monospace-font changes. The only acceptable ASCII diagrams are directory trees (`├──` / `└──`) — those stay as-is.
+
+## Writing docs (`docs/`, `README.md`, `website/`)
+
+- **Always quote Mermaid labels that contain `(`, `)`, `@`, `:`, `,`, `&`, `<br/>`, or punctuation other than letters, digits, `_`, and `-`.** Use `["foo(args)"]` for nodes and `-->|"@tool call"|` for edge labels. Unquoted parentheses inside `[...]` or `|...|` blow up the flowchart parser silently — the page still loads but the diagram disappears. After editing any mermaid block, open the page locally (`npm run docs:dev`) and confirm zero `Parse error on line N` entries in the browser console. The breakage is invisible in source review.
+- **Test docs in the dev server before declaring done.** `npm run docs:dev` (VitePress on `:5173`) catches mermaid parse errors, broken links, and dead anchors that the markdown source hides. For visual changes (new diagrams, layout, hero, sidebar), capture a Playwright screenshot of the affected page so the reviewer can spot regressions without spinning up the server.
+- **Cross-page links are root-absolute, no extension** — `/documentation/hooks`, never `./hooks.md` or `hooks` (the latter resolves wrong under `cleanUrls: true`). Mermaid node-click targets follow the same convention.
+- **Sidebar registration is mandatory.** A new page under `docs/documentation/` is invisible until it's added to the `sidebar` block in `docs/.vitepress/config.ts`. Update both at the same time.
 
 ## What NOT to do
 

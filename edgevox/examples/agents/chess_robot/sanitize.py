@@ -163,29 +163,51 @@ def _strip_outer_quotes(text: str) -> str:
 
 
 class BriefingLeakGuard:
-    """Drop any ``[CHESS BRIEFING ...]`` preamble the model parrots back.
+    """Drop any chess-briefing text the model parrots back.
 
     Small models (1-2B) occasionally regurgitate the system-role
     briefing verbatim instead of speaking in persona. The block is
     internal context — if it reaches TTS the user hears a wall of FEN /
     eval / PV noise that makes the robot sound broken.
 
-    Strip anything from the first ``[CHESS BRIEFING`` marker up to and
-    including ``[END BRIEFING]`` (or end-of-string if the closing
-    marker is missing). If the stripped result is empty we substitute a
-    filler so Rook still says *something*.
+    Three leak shapes the guard catches:
+
+    1. Full block — ``[CHESS BRIEFING ...]`` ... ``[END BRIEFING]``.
+       Stripped bracket-to-bracket.
+    2. Header-less block — model drops the opening marker but keeps the
+       body and the closing ``[END BRIEFING]``. Stripped from the first
+       recognisable briefing field (``You (Rook) are playing`` /
+       ``Position (FEN):`` / ``To move:``) through the closing marker.
+    3. Dangling ``[END BRIEFING]`` or briefing-body lines with no
+       closer — stripped from the first signature line to end-of-string.
+
+    If the strip leaves the reply empty a random persona-agnostic filler
+    is substituted so Rook still says *something*.
     """
 
     points = frozenset({AFTER_LLM})
     priority = 68  # run between ThinkTagStrip (70) and VoiceCleanup (65)
 
-    _BRIEFING_RE = re.compile(r"\[CHESS BRIEFING.*?(?:\[END BRIEFING\]|\Z)", re.DOTALL)
+    _FULL_BRIEFING_RE = re.compile(r"\[CHESS BRIEFING.*?(?:\[END BRIEFING\]|\Z)", re.DOTALL)
+    # Anchor on distinctive first-line wording that only the briefing
+    # itself uses, so we don't trim legitimate prose that mentions
+    # "position" or "to move".
+    _BRIEFING_BODY_RE = re.compile(
+        r"(?:^|\n)\s*(?:You \(Rook\) are playing|Position \(FEN\):|To move:).*?(?:\[END BRIEFING\]|\Z)",
+        re.DOTALL,
+    )
+    _END_MARKER_ONLY_RE = re.compile(r"\s*\[END BRIEFING\]\s*")
+
+    _LEAK_MARKERS = ("[CHESS BRIEFING", "[END BRIEFING]", "You (Rook) are playing", "Position (FEN):")
 
     def __call__(self, point: str, ctx: AgentContext, payload: dict) -> HookResult | None:
         content = payload.get("content") or ""
-        if "[CHESS BRIEFING" not in content:
+        if not any(m in content for m in self._LEAK_MARKERS):
             return None
-        cleaned = self._BRIEFING_RE.sub("", content).strip()
+        cleaned = self._FULL_BRIEFING_RE.sub("", content)
+        cleaned = self._BRIEFING_BODY_RE.sub("", cleaned)
+        cleaned = self._END_MARKER_ONLY_RE.sub("", cleaned)
+        cleaned = cleaned.strip()
         if not cleaned:
             cleaned = random.choice(_FALLBACK_FILLERS)
         if cleaned == content.strip():

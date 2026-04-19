@@ -49,9 +49,9 @@ Everything above a horizontal line calls into the line below it. Components at t
 ```mermaid
 flowchart LR
     MIC[Microphone] --> REC["AudioRecorder<br/>(Silero VAD v6)"]
-    REC -->|on_speech(audio)| USER["pipeline callback"]
-    REC -->|on_level(rms)| TUI["TUI meter"]
-    REC -->|on_interrupt()| PLAYER
+    REC -->|"on_speech(audio)"| USER["pipeline callback"]
+    REC -->|"on_level(rms)"| TUI["TUI meter"]
+    REC -->|"on_interrupt()"| PLAYER
 
     USER --> PLAYER["InterruptiblePlayer<br/>(PortAudio callback)"]
     PLAYER --> SPK[Speaker]

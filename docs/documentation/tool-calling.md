@@ -8,7 +8,7 @@ EdgeVox has to work with GGUF models that emit tool calls in 7+ different wire f
 flowchart TD
     A[LLM response] -->|structured tool_calls?| S[Dispatch]
     A -->|free-form content| B["parse_tool_calls_from_content"]
-    B --> C[Try detectors on raw content<br/>(Qwen3 tool calls live inside think blocks)]
+    B --> C["Try detectors on raw content<br/>(Qwen3 tool calls live inside think blocks)"]
     C -->|match| S
     C -->|miss| D[Strip think blocks]
     D --> E[Retry detectors on stripped]

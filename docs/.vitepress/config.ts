@@ -55,6 +55,7 @@ export default withMermaid(
               { text: "Quick Start", link: "/documentation/quickstart" },
               { text: "Architecture", link: "/documentation/architecture" },
               { text: "Component Design", link: "/documentation/components" },
+              { text: "Configuration", link: "/documentation/configuration" },
             ],
           },
           {

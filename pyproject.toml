@@ -76,10 +76,29 @@ desktop = [
     "rlottie-python>=1.3",  # LGPL-2.1 (dynamic-linked via ctypes) — Lottie faces
     "pillow>=10",  # MIT/HPND — rlottie-python renders frames via PIL
 ]
+# Pluggable barge-in VAD backends — these slot behind the shared
+# ``BargeInVADWatcher`` Protocol. ``EnergyBargeInWatcher`` is
+# dep-free; the three heavier backends live here so offline boxes
+# aren't forced to carry them. Silero v6 reuses the ONNX bundled
+# with faster-whisper, so no extra install is needed for that
+# backend — it works with ``edgevox`` core alone. ``webrtcvad-wheels``
+# ships prebuilt wheels of the BSD-licensed upstream.
+voice-vad = [
+    "webrtcvad-wheels>=2.0",  # BSD — WebRTC VAD GMM baseline (Google's classifier)
+]
+# Vector retrieval over ``Fact`` memory via ``sqlite-vec``. The
+# extension ships as a prebuilt wheel with a loadable shared library
+# that hooks into stdlib ``sqlite3``. Apache-2 licensed — compatible
+# with EdgeVox's MIT license. Embeddings themselves come from whatever
+# ``embed_fn`` the user wires in (e.g. ``llama_embed(llm)``).
+memory-vec = [
+    "sqlite-vec>=0.1",  # Apache-2.0 — sqlite extension for ANN search
+]
 # ros2: rclpy is a system package provided by the ROS2 workspace, not installable from PyPI
 dev = [
     "pytest>=7.0",
     "pytest-asyncio",
+    "pytest-timeout>=2.0",  # enables ``--timeout=`` so hung tests don't freeze CI
     "ruff>=0.8",
     "pre-commit>=3.7",
 ]
