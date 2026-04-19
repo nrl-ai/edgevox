@@ -454,6 +454,11 @@ class TestOTelBridge:
                 sys.modules["opentelemetry"] = real_otel
 
     def test_bridge_creates_spans_when_otel_available(self):
+        """OTel's global ``TracerProvider`` is set-once-per-process, so
+        this test cooperates with any provider another test in the same
+        session already installed: we add a fresh in-memory exporter
+        to the *existing* provider when we find one, and install a
+        brand-new provider only when no other test has claimed it."""
         pytest.importorskip("opentelemetry")
         pytest.importorskip("opentelemetry.sdk")
         from opentelemetry import trace
@@ -465,19 +470,24 @@ class TestOTelBridge:
         from edgevox.agents.tracing_otel import _reset_bridge_state, install_otel_bridge
 
         _reset_bridge_state()
-        provider = TracerProvider()
         exporter = InMemorySpanExporter()
-        provider.add_span_processor(SimpleSpanProcessor(exporter))
-        trace.set_tracer_provider(provider)
+        existing = trace.get_tracer_provider()
+        if isinstance(existing, TracerProvider):
+            existing.add_span_processor(SimpleSpanProcessor(exporter))
+            provider = existing
+        else:
+            provider = TracerProvider()
+            provider.add_span_processor(SimpleSpanProcessor(exporter))
+            trace.set_tracer_provider(provider)
 
         bus = EventBus()
-        install_otel_bridge(bus, service_name="test")
+        install_otel_bridge(bus, service_name="test-tier1")
 
-        hook = TracingHook(service_name="test")
+        hook = TracingHook(service_name="test-tier1")
         ctx = AgentContext(bus=bus)
         hook(ON_RUN_START, ctx, None)
         hook(ON_RUN_END, ctx, {"reply": "done"})
 
-        spans = exporter.get_finished_spans()
-        assert len(spans) == 1
+        spans = [s for s in exporter.get_finished_spans() if s.attributes.get("service.name") == "test-tier1"]
+        assert spans, "expected our tier1-tagged span"
         assert spans[0].attributes.get("edgevox.span_id") is not None

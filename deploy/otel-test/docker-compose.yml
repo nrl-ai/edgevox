@@ -1,0 +1,34 @@
+# Minimal OTel collector for integration tests.
+#
+# Usage::
+#
+#     cd deploy/otel-test
+#     docker compose up -d
+#     # … run tests that talk to http://localhost:4318 …
+#     docker compose down
+#
+# The collector listens on:
+#   - 4317 — OTLP gRPC
+#   - 4318 — OTLP HTTP
+#   - 13133 — healthcheck (HTTP 200 when ready)
+#
+# Received spans are written to ``/tmp/otel-traces.json`` inside the
+# container (volume-mounted to ``./received.json`` on the host) so
+# tests can assert on the raw JSON payload the collector persisted.
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.112.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otelcol-config.yaml:/etc/otelcol/config.yaml:ro
+      - ./received.json:/tmp/otel-traces.json
+    ports:
+      - "4317:4317"   # OTLP/gRPC
+      - "4318:4318"   # OTLP/HTTP
+      - "13133:13133" # health_check
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133"]
+      interval: 1s
+      timeout: 2s
+      retries: 30

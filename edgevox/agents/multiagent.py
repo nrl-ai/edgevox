@@ -159,7 +159,13 @@ class Blackboard:
         with self._lock:
             pool, self._watcher_pool = self._watcher_pool, None
         if pool is not None:
-            pool.shutdown(wait=True, cancel_futures=True)
+            # ``wait=True`` drains queued watcher invocations before
+            # returning — without ``cancel_futures``, which would
+            # silently drop events that hadn't started running yet.
+            # Callers that want hard-stop semantics can call
+            # ``pool.shutdown(cancel_futures=True)`` themselves via
+            # ``bb._watcher_pool`` before ``close()``.
+            pool.shutdown(wait=True)
 
     def keys(self) -> list[str]:
         with self._lock:

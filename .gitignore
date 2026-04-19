@@ -104,3 +104,4 @@ secrets/
 webui/test_results/
 webui/tsconfig.tsbuildinfo
 .playwright-mcp/
+deploy/otel-test/received.json

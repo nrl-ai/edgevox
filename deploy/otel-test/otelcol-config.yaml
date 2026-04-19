@@ -1,0 +1,42 @@
+# OTel collector config for integration tests.
+# - Accepts OTLP over gRPC (4317) and HTTP (4318).
+# - Exposes /healthz-ish check on 13133.
+# - Persists every span to /tmp/otel-traces.json so tests can
+#   open the file and inspect what actually landed end-to-end.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 100ms
+
+exporters:
+  # File exporter writes every span as one JSON-per-line record —
+  # trivial for pytest to parse.
+  file:
+    path: /tmp/otel-traces.json
+    format: json
+    rotation:
+      max_megabytes: 10
+  # Debug exporter dumps to the container's stdout so
+  # ``docker compose logs`` shows received spans during manual runs.
+  debug:
+    verbosity: detailed
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file, debug]

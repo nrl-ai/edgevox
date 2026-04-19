@@ -64,6 +64,8 @@ class ScriptedLLM:
         temperature: float = 0.7,
         stream: bool = False,
         stop_event: threading.Event | None = None,
+        grammar: Any = None,
+        seed: int | None = None,
     ) -> Any:
         self.calls.append(
             {
@@ -74,6 +76,8 @@ class ScriptedLLM:
                 "temperature": temperature,
                 "stream": stream,
                 "stop_event": stop_event,
+                "grammar": grammar,
+                "seed": seed,
             }
         )
         if not self._script:
