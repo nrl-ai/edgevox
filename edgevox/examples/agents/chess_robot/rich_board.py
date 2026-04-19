@@ -36,7 +36,7 @@ from edgevox.agents.hooks import BEFORE_LLM, HookResult
 
 if TYPE_CHECKING:
     from edgevox.agents.base import AgentContext
-    from edgevox.integrations.chess.environment import ChessEnvironment
+    from edgevox.integrations.chess.environment import ChessEnvironment, ChessState
 
 log = logging.getLogger(__name__)
 
@@ -244,7 +244,7 @@ class RichChessAnalyticsHook:
         if not isinstance(messages, list):
             return None
 
-        briefing = self._build_briefing(env)
+        briefing = self._build_briefing(env, ctx)
         if not briefing:
             return None
 
@@ -280,14 +280,56 @@ class RichChessAnalyticsHook:
 
     # ----- briefing builder -----
 
-    def _build_briefing(self, env: ChessEnvironment) -> str:
-        """Assemble the multi-line analytics card."""
+    def _build_briefing(self, env: ChessEnvironment, ctx: AgentContext | None = None) -> str:
+        """Assemble the briefing card.
+
+        When :class:`CommentaryGateHook` has stashed a
+        ``commentary_directive`` on ``ctx.session.state``, the briefing
+        switches to a tight GROUND TRUTH-only shape: perspective +
+        recent moves + the directive. The rich FEN / PV / king-safety
+        lines are omitted because 1-2B models can't read them
+        accurately and their presence invites fabrication (claiming
+        pins / forks / attacks that don't exist).
+
+        Without a directive, the full analytics card is rendered as
+        before — useful for stronger models or for diagnostic runs
+        where commentary quality isn't gated on small-model limits.
+        """
         state = env.snapshot()
         try:
             board = chess.Board(state.fen)
         except ValueError:
             return ""
 
+        directive = None
+        if ctx is not None:
+            directive = ctx.session.state.get("commentary_directive")
+
+        if directive:
+            return self._build_focused_briefing(env, state, directive)
+        return self._build_full_briefing(env, state, board)
+
+    def _build_focused_briefing(self, env: ChessEnvironment, state: ChessState, directive: str) -> str:
+        """Tight, fabrication-resistant briefing for small models.
+
+        Only contains the perspective note, the last few moves in SAN,
+        and the verified-facts directive from
+        :class:`CommentaryGateHook`. No FEN, no eval number, no PV — all
+        of which a 1-2B model will otherwise paraphrase into hallucinated
+        tactical claims.
+        """
+        lines: list[str] = ["[CHESS BRIEFING — internal context, do not read aloud verbatim]"]
+        lines.append(_engine_side_explanation(env.engine_plays))
+        if state.san_history:
+            tail = state.san_history[-6:]
+            lines.append(f"Recent moves: {' '.join(tail)}")
+        lines.append(directive)
+        lines.append("[END BRIEFING]")
+        return "\n".join(lines)
+
+    def _build_full_briefing(self, env: ChessEnvironment, state: ChessState, board: chess.Board) -> str:
+        """Full analytics card — legacy shape, still used when no
+        commentary gate is wired in (or for debugging)."""
         lines: list[str] = ["[CHESS BRIEFING — internal context, do not read aloud verbatim]"]
         lines.append(_engine_side_explanation(env.engine_plays))
         lines.append(f"Position (FEN): {state.fen}")

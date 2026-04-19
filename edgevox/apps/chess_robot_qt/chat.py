@@ -88,6 +88,14 @@ class ChatView(QScrollArea):
         scrolling stays usable."""
         self._add(_DebugEntry(title, body))
 
+    def add_analytics(self, headline: str, body: str) -> None:
+        """Render a per-turn analytics summary as a system-info bubble.
+
+        Non-intrusive styling (subdued colour, smaller font) so
+        analytics don't compete with Rook's actual spoken replies.
+        Always expanded; bodies are short (<~200 chars)."""
+        self._add(_AnalyticsEntry(headline, body))
+
     def add_move_chip(self, who: str, san: str) -> None:
         """``who`` is ``'you'`` or ``'rook'`` — compact chip in the middle."""
         self._add(_MoveChip(who, san, self._accent))
@@ -313,6 +321,41 @@ class _DebugEntry(QWidget):
         self._expanded = not self._expanded
         self._header.setText(self._header_text(self._title, collapsed=not self._expanded))
         self._body.setText(self._render_body(expanded=self._expanded))
+
+
+class _AnalyticsEntry(QWidget):
+    """System-info bubble — per-turn move analytics (piece moves, eval).
+
+    Visually distinct from regular chat bubbles: subdued slate colour,
+    monospace mini-font, centred layout. Meant to be informational
+    background, not spoken dialogue."""
+
+    def __init__(self, headline: str, body: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+
+        head = QLabel(f"◆ {headline}")
+        head.setWordWrap(True)
+        head.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        head.setStyleSheet(
+            "color: #7aa8ff; background: rgba(122, 168, 255, 0.06); "
+            "padding: 4px 10px; border-radius: 8px; "
+            "font-family: monospace; font-size: 10px; letter-spacing: 0.3px;"
+        )
+        col.addWidget(head)
+
+        if body and body != headline:
+            detail = QLabel(body)
+            detail.setWordWrap(True)
+            detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            detail.setStyleSheet(
+                "color: #9aa7b9; background: rgba(10, 14, 22, 0.5); "
+                "padding: 6px 10px; border-radius: 6px; "
+                "font-family: monospace; font-size: 10px;"
+            )
+            col.addWidget(detail)
 
 
 __all__ = ["ChatEntry", "ChatView"]

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from edgevox.apps.chess_robot_qt.settings import (
     BOARD_THEME_LABELS,
     BOARD_THEMES,
+    LLM_CHOICES,
     PERSONA_LABELS,
     PERSONAS,
     PIECE_SETS,
@@ -80,6 +81,12 @@ class SettingsDialog(QDialog):
         self._persona_combo = _combo(persona_items, current.persona)
         form.addRow("Persona", self._persona_combo)
 
+        # LLM picker — three lightweight options. Switching requires a
+        # full LLM reload so the change applies on the next launch,
+        # not live. The restart hint below the form surfaces that.
+        self._llm_combo = _combo(LLM_CHOICES, current.llm_model)
+        form.addRow("Chat model", self._llm_combo)
+
         self._voice_checkbox = QCheckBox("Enable voice input")
         self._voice_checkbox.setChecked(current.voice_enabled)
         form.addRow("", self._voice_checkbox)
@@ -92,7 +99,7 @@ class SettingsDialog(QDialog):
         # briefing, memory block, messages) and raw reply are logged
         # inline to the chat as monospace bubbles. Applies live — no
         # restart needed.
-        self._debug_checkbox = QCheckBox("Debug mode (log LLM input + reasoning to chat)")
+        self._debug_checkbox = QCheckBox("Debug mode (log LLM input + per-turn analytics to chat)")
         self._debug_checkbox.setChecked(current.debug_mode)
         form.addRow("", self._debug_checkbox)
 
@@ -109,9 +116,10 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(form)
 
-        # Hint: some settings require a restart (persona, voice, audio devices).
+        # Hint: some settings require a restart (persona, voice, audio devices, chat model).
         hint = QLabel(
-            "Piece set + theme + mute apply instantly. Persona / voice / audio-device changes take effect on the next launch."
+            "Piece set + theme + mute apply instantly. Persona / voice / "
+            "audio-device / chat-model changes take effect on the next launch."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8796a8; font-size: 11px; padding-top: 4px;")
@@ -154,6 +162,7 @@ class SettingsDialog(QDialog):
             input_device=_selected_device(self._mic_combo),
             output_device=_selected_device(self._speaker_combo),
             debug_mode=self._debug_checkbox.isChecked(),
+            llm_model=_selected_key(self._llm_combo, LLM_CHOICES),
         )
         new.save()
         self.changed.emit(new)

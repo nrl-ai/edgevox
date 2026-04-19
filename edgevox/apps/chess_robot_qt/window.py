@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSizePolicy,
+    QStackedWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -69,9 +70,13 @@ class RookWindow(QMainWindow):
         self._bridge = bridge
         self._settings = Settings.load()
         # Sync the loaded settings into the bridge config when present —
-        # e.g. restore the previously-chosen persona at launch.
+        # e.g. restore the previously-chosen persona and LLM at launch.
+        # These must land BEFORE ``bridge.start()`` fires the background
+        # load job, otherwise the load job reads the stale defaults.
         if self._settings.persona != bridge.config.persona:
             bridge.config.persona = self._settings.persona
+        if self._settings.llm_model and self._settings.llm_model != bridge.config.llm_path:
+            bridge.config.llm_path = self._settings.llm_model
         self._accent = QColor(_PERSONA_ACCENT.get(bridge.config.persona, _DEFAULT_ACCENT))
         # The engine applies its reply the instant the user plays so the
         # LLM briefing has full context, but showing that reply on the
@@ -126,13 +131,33 @@ class RookWindow(QMainWindow):
         board_frame.setStyleSheet("QFrame { background: #0b111a; border-radius: 14px; padding: 8px; }")
         bf_col = QVBoxLayout(board_frame)
         bf_col.setContentsMargins(10, 10, 10, 10)
+        # Stack a loading panel on top of the board; swap to the board
+        # only once ``bridge.ready`` fires. Prevents the user from
+        # pushing moves while the LLM is still downloading / loading —
+        # previously the board was interactive during load and the
+        # first click silently dropped on the floor.
+        #
+        # Uses QStackedWidget (not QStackedLayout) so the currently-
+        # hidden widget is actually ``hide()``'d — a nested QStackedLayout
+        # inside a QVBoxLayout can leave the stale widget painted
+        # depending on how the parent sizes children, which manifested
+        # as the loading panel never fully disappearing after ready.
+        self._board_stack = QStackedWidget()
         self._board = ChessBoardView()
         self._board.move_requested.connect(self._on_board_move)
         self._board.setMinimumSize(420, 420)
         self._board.set_orientation(bridge.config.user_plays)
         self._board.set_piece_set(self._settings.piece_set)
         self._board.set_theme(self._settings.board_theme)
-        bf_col.addWidget(self._board)
+        self._loading_panel = _LoadingPanel(self._accent)
+        # Force an arrow cursor on the loading panel so the pointing-
+        # hand cursor the board sets on itself can't visually "leak"
+        # onto the panel through parent-chain inheritance.
+        self._loading_panel.setCursor(Qt.CursorShape.ArrowCursor)
+        self._board_stack.addWidget(self._loading_panel)
+        self._board_stack.addWidget(self._board)
+        self._board_stack.setCurrentWidget(self._loading_panel)
+        bf_col.addWidget(self._board_stack)
         left.addWidget(board_frame, stretch=1)
         self._history = QLabel("no moves yet")
         self._history.setStyleSheet("color: #9aa7b9; font-family: monospace; font-size: 11px; padding: 2px 8px;")
@@ -195,8 +220,9 @@ class RookWindow(QMainWindow):
         b.user_echo.connect(self._on_user_echo)
         b.error.connect(self._on_error)
         b.ready.connect(self._on_ready)
-        b.load_progress.connect(lambda t: self._app_bar.set_status(t))
+        b.load_progress.connect(self._on_load_progress)
         b.debug_event.connect(self._chat.add_debug)
+        b.analytics_event.connect(self._chat.add_analytics)
 
         # Apply the persisted debug flag before the first turn so the
         # DebugTapHook starts emitting immediately when enabled.
@@ -225,20 +251,33 @@ class RookWindow(QMainWindow):
     def _on_ready(self) -> None:
         self._app_bar.set_status("online")
         self._input.set_enabled(True)
+        # Swap the loading panel out for the live board.
+        self._board_stack.setCurrentWidget(self._board)
         # Prime the board with the starting position.
         snap = self._bridge.snapshot()
         if snap is not None:
             self._board.set_state(snap)
         # Replay the persisted chat transcript so the user sees their
-        # prior exchanges after a restart. The bridge already restores
-        # the session for the agent's context; this closes the UI gap so
-        # the chat widget isn't empty while the board shows a mid-game
-        # position. Safe to call with an empty history (no-op).
+        # prior exchanges after a restart. The bridge already restored
+        # the session for the agent's context inside ``_build``; we do
+        # it here rather than in ``_on_load_progress`` because the
+        # session isn't constructed until right before ``ready.emit()``,
+        # and load-progress events fire earlier with ``_ctx_session``
+        # still ``None`` — which previously returned an empty list
+        # silently and left the chat blank on relaunch.
         for role, text in self._bridge.session_messages():
             if role == "user":
                 self._chat.add_user(text)
             elif role == "assistant":
                 self._chat.add_rook(text)
+
+    def _on_load_progress(self, text: str) -> None:
+        """Mirror the bridge's load-progress into the app-bar status AND
+        the board-area loading panel so the user has a clear signal
+        that model / engine are still coming up."""
+        self._app_bar.set_status(text)
+        if hasattr(self, "_loading_panel"):
+            self._loading_panel.set_stage(text)
 
     def _on_state(self, state: str) -> None:
         label = {
@@ -248,6 +287,23 @@ class RookWindow(QMainWindow):
         }.get(state, state)
         self._app_bar.set_turn_label(label, highlight=state == "listening")
         self._face.set_tempo(state)
+        # Block board interaction while Rook is mid-turn. The board's
+        # own turn-check catches most cases, but a rapid double-click
+        # during the engine-reveal delay (or a click the moment the
+        # bridge transitions states) was slipping through and the move
+        # either silently dropped or raced with the chess_state_changed
+        # reveal — looking to the user like the move "reverted".
+        self._board.setEnabled(state == "listening")
+        # On return to "listening", force a re-render from the env's
+        # authoritative state — but ONLY if there's no engine-reveal
+        # pending. Otherwise the force-apply would pre-empt the 3.5s
+        # delay and flash the engine's move on the board the moment
+        # the agent turn ends. The engine-reveal timer owns the final
+        # apply in that case.
+        if state == "listening" and self._pending_engine_state is None:
+            snap = self._bridge.snapshot()
+            if snap is not None:
+                self._apply_chess_state(snap)
 
     def _on_chess_state(self, state) -> None:
         engine_just_moved = bool(
@@ -343,6 +399,13 @@ class RookWindow(QMainWindow):
     def _on_error(self, msg: str) -> None:
         self._app_bar.set_status(msg, error=True)
         QTimer.singleShot(4500, lambda: self._app_bar.set_status("online"))
+        # If the error fired before ``ready`` (startup failure), take the
+        # loading panel down so the user sees a usable error state rather
+        # than a perpetual "getting rook ready…" panel. The board will
+        # still not accept moves because ``_loaded`` never flips, but
+        # the user can see what went wrong.
+        if hasattr(self, "_board_stack") and self._board_stack.currentWidget() is self._loading_panel:
+            self._loading_panel.set_stage(f"failed: {msg}")
 
     # ----- user actions -----
 
@@ -579,6 +642,52 @@ class _RoundedRoot(QWidget):
                     event.accept()
                     return
         super().mousePressEvent(event)
+
+
+class _LoadingPanel(QWidget):
+    """Blocking overlay shown in the board area while the LLM and
+    engine load. Replaces the interactive :class:`ChessBoardView` via
+    a :class:`QStackedLayout` so the user can't push moves that would
+    silently drop on the floor during the first few seconds of launch.
+
+    The stage text is updated from ``bridge.load_progress`` — the user
+    sees "checking chess engine…", "downloading model…", "ready" as
+    the bridge walks its boot steps.
+    """
+
+    def __init__(self, accent: QColor, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setMinimumSize(420, 420)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(24, 24, 24, 24)
+        col.setSpacing(12)
+        col.addStretch(1)
+
+        self._title = QLabel("getting rook ready…")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title.setStyleSheet("color: #dbe4ef; font-size: 18px; font-weight: 600;")
+        col.addWidget(self._title)
+
+        self._stage = QLabel("booting")
+        self._stage.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._stage.setWordWrap(True)
+        self._stage.setStyleSheet(
+            f"color: {accent.name()}; font-family: monospace; font-size: 12px; letter-spacing: 0.3px;"
+        )
+        col.addWidget(self._stage)
+
+        hint = QLabel(
+            "first launch downloads the LLM (~1 GB) and the chess engine.\n"
+            "subsequent launches are faster — everything is cached."
+        )
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #6f7e92; font-size: 11px;")
+        col.addWidget(hint)
+        col.addStretch(1)
+
+    def set_stage(self, text: str) -> None:
+        self._stage.setText(text)
 
 
 class _AppBar(QFrame):

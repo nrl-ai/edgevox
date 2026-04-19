@@ -116,6 +116,47 @@ class TestAppBoots:
         assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
 
 
+class TestAnalyticsDebugGating:
+    """The per-turn YOU / ROOK / eval bubble should render in the chat
+    only when Debug mode is on. In the default state it clutters
+    normal play, so ``_emit_analytics`` no-ops until ``debug_mode`` is
+    flipped on via Settings."""
+
+    def _payload(self):
+        return {
+            "user_desc": "bishop from c1 to g5 (Bg5)",
+            "engine_desc": "king from f7 to e8 (Ke8)",
+            "score_line_user": "Engine evaluation (from your side): -3.94 pawns — Rook is winning decisively.",
+            "classification": "good",
+            "eval_cp": -394,
+        }
+
+    def test_no_emit_when_debug_mode_off(self):
+        from edgevox.apps.chess_robot_qt.bridge import RookBridge, RookConfig
+
+        bridge = RookBridge(RookConfig())
+        # debug_mode defaults to False.
+        captured: list[tuple[str, str]] = []
+        bridge.signals.analytics_event.connect(lambda h, b: captured.append((h, b)))
+        bridge._emit_analytics(self._payload())
+        assert captured == [], "analytics must stay silent in the chat unless debug mode is on"
+
+    def test_emits_when_debug_mode_on(self):
+        from edgevox.apps.chess_robot_qt.bridge import RookBridge, RookConfig
+
+        bridge = RookBridge(RookConfig())
+        bridge.set_debug_mode(True)
+        captured: list[tuple[str, str]] = []
+        bridge.signals.analytics_event.connect(lambda h, b: captured.append((h, b)))
+        bridge._emit_analytics(self._payload())
+        assert len(captured) == 1
+        headline, body = captured[0]
+        assert "bg5" in headline.lower() or "bishop" in headline.lower()
+        assert "YOU —" in body
+        assert "ROOK —" in body
+        assert "-3.94" in body
+
+
 class TestSessionReplay:
     """``RookBridge.session_messages`` feeds the chat widget on launch."""
 

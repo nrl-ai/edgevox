@@ -64,6 +64,21 @@ PERSONA_LABELS = {
 }
 
 
+# ----- LLM choices -----
+#
+# Three lightweight models the user can pick between in Settings. All
+# three are already registered in :mod:`edgevox.llm.models` so the same
+# preset-slug string feeds straight into :class:`~edgevox.llm.LLM`.
+# Model swap requires a fresh agent build → next launch; the dialog
+# flags that in the restart hint.
+
+LLM_CHOICES: dict[str, str] = {
+    "gemma-4-e2b": "Gemma 4 E2B — default, best quality in eval (~1.8 GB)",
+    "llama-3.2-1b": "Llama 3.2 1B — lightest / fastest, more fabrication (~0.8 GB)",
+    "qwen3-1.7b": "Qwen3 1.7B — Apache-2.0, thinking-mode model (~1.1 GB)",
+}
+
+
 @dataclass
 class Settings:
     """Current persisted preferences.
@@ -83,6 +98,13 @@ class Settings:
     input_device: int | None = None
     output_device: int | None = None
     debug_mode: bool = False
+    # Preset slug understood by ``edgevox.llm.llamacpp._resolve_model_path``.
+    # Must be one of :data:`LLM_CHOICES`. Default is Gemma 4 E2B —
+    # picked by the LLM eval harness as best across the three sizes
+    # (cleanest pronouns, shortest replies, lowest fabrication). Users
+    # can switch to Llama 3.2 1B (fastest / lightest) or Qwen 3 1.7B
+    # (Apache-2.0) via the Settings dialog.
+    llm_model: str = "gemma-4-e2b"
 
     @classmethod
     def load(cls) -> Settings:
@@ -96,6 +118,7 @@ class Settings:
             input_device=_device(q.value("input_device", None)),
             output_device=_device(q.value("output_device", None)),
             debug_mode=_bool(q.value("debug_mode", False)),
+            llm_model=_llm_slug(q.value("llm_model", "llama-3.2-1b")),
         )
 
     def save(self) -> None:
@@ -111,6 +134,7 @@ class Settings:
         q.setValue("input_device", "" if self.input_device is None else int(self.input_device))
         q.setValue("output_device", "" if self.output_device is None else int(self.output_device))
         q.setValue("debug_mode", self.debug_mode)
+        q.setValue("llm_model", self.llm_model)
 
 
 def _bool(v) -> bool:
@@ -128,6 +152,14 @@ def _device(v) -> int | None:
         return int(v)
     except (TypeError, ValueError):
         return None
+
+
+def _llm_slug(v) -> str:
+    """Pin the saved LLM slug to a known value — a stray QSettings
+    blob that doesn't match the current preset registry would
+    otherwise crash ``LLM()`` on launch."""
+    slug = str(v) if v is not None else "gemma-4-e2b"
+    return slug if slug in LLM_CHOICES else "gemma-4-e2b"
 
 
 def available_input_devices() -> list[tuple[int, str]]:
@@ -166,6 +198,7 @@ def _query_devices(*, kind: str) -> list[tuple[int, str]]:
 __all__ = [
     "BOARD_THEMES",
     "BOARD_THEME_LABELS",
+    "LLM_CHOICES",
     "PERSONAS",
     "PERSONA_LABELS",
     "PIECE_SETS",

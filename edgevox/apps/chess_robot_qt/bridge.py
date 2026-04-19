@@ -49,6 +49,7 @@ from edgevox.agents.hooks_builtin import (
 )
 from edgevox.agents.interrupt import InterruptController
 from edgevox.agents.memory import Compactor, NotesFile, SQLiteMemoryStore
+from edgevox.examples.agents.chess_robot.commentary_gate import CommentaryGateHook
 from edgevox.examples.agents.chess_robot.face_hook import RobotFaceHook
 from edgevox.examples.agents.chess_robot.move_intercept import MoveInterceptHook
 from edgevox.examples.agents.chess_robot.rich_board import RichChessAnalyticsHook
@@ -145,13 +146,22 @@ class RookConfig:
     stockfish_skill: int | None = None
     maia_weights: str | None = None
     # LLM path/spec. ``None`` → framework default (Gemma-4-E2B). Pass a
-    # local ``.gguf`` path or the ``hf:repo:file`` shorthand
-    # ``_resolve_model_path`` understands (see
-    # :func:`edgevox.llm.llamacpp._resolve_model_path`). We default to a
-    # tool-call-capable small model for Rook — Llama-3.2-1B — because
-    # MoveInterceptHook handles the chess tools and the LLM only needs
-    # natural conversation.
-    llm_path: str | None = "hf:bartowski/Llama-3.2-1B-Instruct-GGUF:Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+    # local ``.gguf`` path, the ``hf:repo:file`` shorthand, or a preset
+    # slug that ``_resolve_model_path`` understands (see
+    # :func:`edgevox.llm.llamacpp._resolve_model_path` /
+    # :mod:`edgevox.llm.models`). Rook's LLM only has to *talk*
+    # naturally (MoveInterceptHook handles the chess tools).
+    #
+    # Default ``gemma-4-e2b`` — picked by the LLM eval harness
+    # (``scripts/eval_llm_commentary.py``). At the three sizes the
+    # Settings dialog exposes, Gemma 4 E2B gave the cleanest, shortest,
+    # most in-persona replies with correct pronouns. Llama 3.2 1B
+    # fabricated piece identities; Qwen 3 1.7B leaked ``<think>`` tags
+    # and had tone mismatches. Gemma's extra ~1 GB vs Llama 1B is
+    # worth the quality jump. Window overrides this at launch from the
+    # persisted ``Settings.llm_model``, so users can swap models
+    # without editing this file.
+    llm_path: str | None = "gemma-4-e2b"
 
     @classmethod
     def from_env(cls) -> RookConfig:
@@ -192,6 +202,11 @@ class _Signals(QObject):
     # ``title`` is a short tag ("SYSTEM PROMPT", "USER", "RAW REPLY", …);
     # ``body`` is the full text to dump into a monospace chat bubble.
     debug_event = Signal(str, str)
+    # Analytics event — a structured per-turn summary (piece / square /
+    # capture / eval). Rendered as a system-info bubble in the chat
+    # regardless of whether Rook spoke this turn. ``headline`` is a
+    # one-line summary; ``body`` is a multi-line detail block.
+    analytics_event = Signal(str, str)
 
 
 class _TurnJob(QRunnable):
@@ -329,6 +344,19 @@ class RookBridge:
             log.exception("agent run failed")
             self.signals.error.emit(f"Agent error: {e}")
         finally:
+            # Re-broadcast the final env state so the UI has a
+            # guaranteed opportunity to converge on the authoritative
+            # board even if any in-turn ``chess_state_changed``
+            # emissions were dropped (cross-thread signal queuing can
+            # drop an event if the sender is deleted mid-queue, and
+            # we've seen user reports of "my move didn't appear on the
+            # board"). Cheap — the UI's ``set_state`` is a no-op when
+            # the FEN hasn't changed since last apply.
+            if self._env is not None:
+                try:
+                    self.signals.chess_state_changed.emit(self._env.snapshot())
+                except Exception:
+                    log.exception("post-turn chess_state_changed emit failed (non-fatal)")
             self._active_ctx = None
             self._busy.clear()
             self.signals.state_changed.emit("listening")
@@ -572,6 +600,47 @@ class RookBridge:
             self.signals.face_changed.emit(dict(payload or {}))
         elif kind == "rook_debug":
             self._emit_debug(payload or {})
+        elif kind == "move_analytics":
+            self._emit_analytics(payload or {})
+
+    def _emit_analytics(self, payload: dict) -> None:
+        """Render a ``move_analytics`` payload as a (headline, body)
+        pair for the chat's system-info bubble.
+
+        Gated behind ``debug_mode`` — the structured YOU / ROOK /
+        engine-eval breakdown is useful for developers debugging the
+        commentary pipeline but clutters the regular chat, so it only
+        renders when the user has Debug mode switched on in Settings.
+        """
+        if not self._debug_mode:
+            return
+        user_desc = payload.get("user_desc")
+        engine_desc = payload.get("engine_desc")
+        # User-facing variant — "you" means the user reading the chat,
+        # not the LLM. Falls back to the Rook-POV line if the user-
+        # facing one is somehow missing (back-compat with older payload
+        # shapes in persisted sessions).
+        score_line = payload.get("score_line_user") or payload.get("score_line")
+        classification = payload.get("classification")
+
+        headline_bits: list[str] = []
+        if user_desc:
+            headline_bits.append(f"you: {user_desc}")
+        if engine_desc:
+            headline_bits.append(f"rook: {engine_desc}")
+        headline = " · ".join(headline_bits) if headline_bits else "analytics"
+
+        body_lines: list[str] = []
+        if user_desc:
+            body_lines.append(f"YOU — {user_desc}")
+        if engine_desc:
+            body_lines.append(f"ROOK — {engine_desc}")
+        if classification and classification not in ("best", "good"):
+            body_lines.append(f"classification: {classification}")
+        if score_line:
+            body_lines.append(score_line)
+        body = "\n".join(body_lines)
+        self.signals.analytics_event.emit(headline, body)
 
     def _emit_debug(self, payload: dict) -> None:
         """Render a ``DebugTapHook`` payload as a (title, body) pair
@@ -680,6 +749,13 @@ class RookBridge:
             # bound later we can reintroduce CHESS_TOOLS behind a flag.
             hooks: list[Any] = [
                 MoveInterceptHook(),
+                # Must run after MoveInterceptHook (priority 90) so the
+                # gate sees the post-move snapshot. Ends the turn
+                # silently for quiet moves — the LLM never runs, no
+                # reply bubble, zero chatter. For notable moves it
+                # stashes a verified-facts directive that
+                # RichChessAnalyticsHook turns into a GROUND TRUTH line.
+                CommentaryGateHook(),
                 MoveCommentaryHook(),
                 RobotFaceHook(persona=persona.slug),
                 RichChessAnalyticsHook(),
@@ -764,19 +840,22 @@ class _LoadJob(QRunnable):
 
 _ROOK_TOOL_GUIDANCE = """\
 /no_think
-You are Rook, a chess robot playing against a human. You speak with your persona's voice — see the persona block below. Think of yourself as sitting across a table from a friend, not writing a chess report.
+I am Rook, a chess robot playing against a human. My persona — see the block below — is the whole point: the user is here for MY voice, not a chess report. I tease, gloat, sigh, joke, trash-talk, sound impressed — whatever my persona does, I do. A flat factual summary is worse than silence.
 
-Before every turn the system shows you a [CHESS BRIEFING ...] block with the current position, your side, the user's side, the evaluation, and the top engine lines. Read it quietly. Do NOT recite it — use it as background knowledge while you speak naturally.
+PRONOUN DISCIPLINE — the single hardest rule to follow. I always refer to myself in the first person: "I played", "my knight", "I'm winning", "I missed it". I use "you" and "your" EXCLUSIVELY when speaking TO the user about THEIR moves or THEIR pieces. I never paste my own move onto the user ("you captured with the pawn" when I did). If I catch myself starting a sentence with "You're" while describing something I just did, I am wrong and must rewrite.
+
+CRITICAL — the user's message will often say "I just played X. You reply with Y." In THAT message, "I" is the user talking to me about THEIR move X, and "you" is me. When I write my reply I switch to MY perspective: my move Y becomes "I played Y" / "my Y"; the user's X becomes "your X" / "you played X". I never restate the user's "I played X" as if I had played X.
+
+When the briefing has a GROUND TRUTH section, its bullets are the event I'm reacting to. Everything else in the briefing is background context.
 
 Speaking rules:
-- You are NOT required to speak every turn. Most routine moves don't deserve a comment — a quiet opponent feels more natural than one who narrates every pawn push.
-- To stay silent, reply with exactly the single token `<silent>` and nothing else. The app treats that as "say nothing" and shows no bubble.
-- Speak when something is actually worth saying: a capture of real value, a check or checkmate threat, a blunder, a clever or surprising move, a greeting at the start, a reaction at the end of the game. Otherwise, prefer silence.
-- Talk like a person, not a search engine. Short, natural, one sentence is usually enough. Contractions are good.
-- Your replies are spoken by a TTS engine later: no markdown, no asterisks, no bullets, no emoji, no <think> tags, no lists.
-- Only reference moves that actually happened (the last move by the user and your reply). Never invent or speculate.
-- Vary your phrasing. If you catch yourself starting several turns the same way ("X is a bold move…"), change it up — or stay silent.
-- Don't explain chess theory unless the user explicitly asks for analysis."""
+- Lead with personality. React emotionally, not clinically. One short sentence is usually plenty.
+- Spoken-English only: no markdown, no asterisks, no bullets, no emoji, no <think> tags, no lists. Contractions welcome.
+- Stay grounded. I don't invent tactics the briefing didn't declare — no made-up pins, forks, or specific attacks on pieces. Vague reactions ("hmm", "tough one", "well played") are fine; hallucinated specifics are not.
+- I don't recite the briefing or quote SAN notation. The user already sees the moves.
+- Vary my phrasing between turns.
+
+If the moment really doesn't call for a reaction — or I genuinely have nothing in character to add — I reply with exactly `<silent>` and nothing else."""
 
 
 def _compose_instructions(persona_prompt: str) -> str:
