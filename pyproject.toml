@@ -94,6 +94,15 @@ voice-vad = [
 memory-vec = [
     "sqlite-vec>=0.1",  # Apache-2.0 — sqlite extension for ANN search
 ]
+# OpenTelemetry bridge for ``TracingHook`` — when installed, spans
+# emitted by the agent loop are forwarded to any OTel-compatible
+# exporter the user has configured. Apache-2 licensed. Without this
+# extra, ``TracingHook`` still emits local ``span_start`` /
+# ``span_end`` events, just doesn't bridge them to OTel.
+observability = [
+    "opentelemetry-api>=1.25",  # Apache-2.0 — OTel tracer API
+    "opentelemetry-sdk>=1.25",  # Apache-2.0 — in-process span processor / exporter
+]
 # ros2: rclpy is a system package provided by the ROS2 workspace, not installable from PyPI
 dev = [
     "pytest>=7.0",

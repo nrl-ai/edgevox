@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
@@ -237,6 +238,345 @@ class ToolOutputTruncatorHook:
                 payload.result = as_str[: self.max_chars] + f"\n… (truncated {len(as_str) - self.max_chars} chars)"
                 return HookResult.replace(payload, reason="truncated tool output")
         return None
+
+
+class TracingHook:
+    """Emit OTel-compatible ``span_start`` / ``span_end`` events.
+
+    On ``ON_RUN_START`` the hook:
+      * generates a ``trace_id`` if the context doesn't already have
+        one (a parent agent may have set it, see handoff plumbing);
+      * generates a fresh ``span_id`` for this agent turn, stores it
+        on the context so ``_drive``'s subsequent ``ctx.emit`` calls
+        tag events with it, and records the previous
+        ``parent_span_id`` so we can restore it at turn end.
+      * emits a ``span_start`` event with ``name=agent_name``,
+        ``trace_id``, ``span_id``, ``parent_span_id``, and a
+        ``start_ns`` timestamp payload.
+
+    On ``ON_RUN_END`` it closes the span with a ``span_end`` event
+    carrying ``duration_ns`` + the run's final reply length as an
+    attribute. Span ids use a 16-char hex prefix of a UUID, matching
+    OTel's span-id width.
+
+    Intended to be cheap: stdlib only, no IO, no threading. Wire an
+    OTel exporter separately via :func:`install_otel_bridge` (in the
+    ``[observability]`` extra) — that subscribes to ``span_start`` /
+    ``span_end`` events and re-emits them as real OTel spans.
+    """
+
+    points = frozenset({ON_RUN_START, ON_RUN_END})
+    priority = 10  # observability tier
+
+    def __init__(self, *, service_name: str = "edgevox") -> None:
+        self.service_name = service_name
+
+    def _make_id(self, *, bits: int) -> str:
+        import secrets
+
+        return secrets.token_hex(bits // 8)
+
+    def __call__(self, point: str, ctx: AgentContext, payload: Any) -> None:
+        if point == ON_RUN_START:
+            state = ctx.hook_state.setdefault(id(self), {})
+            if not ctx.trace_id:
+                ctx.trace_id = self._make_id(bits=128)
+            span_id = self._make_id(bits=64)
+            # Remember the incoming parent so we can restore it at
+            # turn-end — nested sub-agents rely on the parent_span_id
+            # pointing at the *caller's* active span while they're
+            # running.
+            state["prior_parent"] = ctx.parent_span_id
+            state["span_id"] = span_id
+            state["start_ns"] = time.monotonic_ns()
+            ctx.parent_span_id = span_id
+            ctx.emit(
+                "span_start",
+                ctx.agent_name or "anon",
+                {
+                    "service.name": self.service_name,
+                    "name": ctx.agent_name or "run",
+                    "trace_id": ctx.trace_id,
+                    "span_id": span_id,
+                    "parent_span_id": state["prior_parent"],
+                    "start_ns": state["start_ns"],
+                },
+            )
+            return
+
+        # ON_RUN_END
+        state = ctx.hook_state.get(id(self), {})
+        start_ns = state.get("start_ns")
+        span_id = state.get("span_id")
+        duration_ns = time.monotonic_ns() - start_ns if start_ns else 0
+        reply = ""
+        if isinstance(payload, dict):
+            reply = payload.get("reply") or ""
+        ctx.emit(
+            "span_end",
+            ctx.agent_name or "anon",
+            {
+                "service.name": self.service_name,
+                "trace_id": ctx.trace_id,
+                "span_id": span_id,
+                "parent_span_id": state.get("prior_parent"),
+                "duration_ns": duration_ns,
+                "reply_len": len(reply),
+            },
+        )
+        # Restore the parent span for any code that continues to reuse
+        # this context after the run (rare but possible; e.g. chaining
+        # two runs on one context in a synchronous script).
+        ctx.parent_span_id = state.get("prior_parent")
+
+
+class ToolErrorRetryHook:
+    """Track per-tool runtime errors and nudge the model after N failures.
+
+    The base ``_drive`` loop already feeds a tool's error string back to
+    the model via the ``tool``-role message on the next hop, so a small
+    model already gets one chance to correct itself. What this hook
+    adds is:
+
+    * **A retry budget** per ``(tool_name, agent_name)`` — after
+      ``max_retries`` failures on the same tool within a single turn,
+      we replace the tool result with an actionable guidance payload
+      (``{"ok": false, "error": ..., "suggest": "...", "retries_exhausted": true}``)
+      so the model stops hammering a broken backend.
+    * **Stable retry-vs-different-approach guidance** — the message
+      is stable across runs, making a looping SLM easier to observe.
+
+    Complementary to ``SchemaRetryHook`` (which handles ``bad
+    arguments:`` / argument-shape errors): this one handles *runtime*
+    errors (``ConnectionError`` / ``TimeoutError`` / stockfish crashes
+    / permission denials). If the result passes ``SchemaRetryHook``'s
+    ``is_argument_shape_error`` check, this hook treats it as
+    already-handled and keeps its budget untouched.
+
+    Priority 40 — mutation tier. Registered after ``SchemaRetryHook``
+    so arg-shape errors consume the schema-retry path first.
+    """
+
+    points = frozenset({ON_RUN_START, AFTER_TOOL})
+    priority = 40
+
+    def __init__(
+        self,
+        *,
+        max_retries: int = 2,
+        exhausted_suggestion: str = "This tool is failing. Try a different tool or answer without it.",
+    ) -> None:
+        self.max_retries = int(max_retries)
+        self.exhausted_suggestion = exhausted_suggestion
+
+    def _budget(self, ctx: AgentContext) -> dict[str, int]:
+        state = ctx.hook_state.setdefault(id(self), {})
+        return state.setdefault("budget", {})
+
+    def __call__(self, point: str, ctx: AgentContext, payload: Any) -> HookResult | None:
+        if point == ON_RUN_START:
+            ctx.hook_state[id(self)] = {"budget": {}}
+            return None
+
+        outcome: ToolCallResult = payload
+        if outcome.ok:
+            # A successful call resets the retry budget for that tool —
+            # one transient failure followed by success shouldn't
+            # permanently lower the ceiling inside this turn.
+            self._budget(ctx).pop(outcome.name, None)
+            return None
+
+        # Let SchemaRetryHook own arg-shape errors (it runs at the same
+        # priority, later in the priority-tie order by registration, so
+        # if the result made it here without being replaced it's a
+        # runtime error worth counting).
+        from edgevox.llm._agent_harness import is_argument_shape_error
+
+        if is_argument_shape_error(outcome.error):
+            return None
+
+        budget = self._budget(ctx)
+        used = budget.get(outcome.name, 0) + 1
+        budget[outcome.name] = used
+
+        if used < self.max_retries:
+            # Under budget — let the default path continue. The model
+            # will see ``{"ok": false, "error": ...}`` on the next hop
+            # and can self-correct. No mutation needed.
+            return None
+
+        # Budget exhausted — replace the outcome so the model stops
+        # calling this tool in a tight loop. Keep the original error
+        # string so the model knows what went wrong, and append a
+        # structured suggestion that's stable across runs.
+        replacement = {
+            "ok": False,
+            "error": outcome.error,
+            "retries_exhausted": True,
+            "suggest": self.exhausted_suggestion,
+        }
+        outcome.result = replacement
+        outcome.error = None
+        return HookResult.replace(outcome, reason="tool retry budget exhausted")
+
+
+class OutputValidatorHook:
+    """Composable post-tool output validator / redactor.
+
+    Runs at ``AFTER_TOOL`` (priority 30 — mutation tier, after
+    ``ToolOutputTruncatorHook`` at 40) and applies a pipeline of
+    validators to ``ToolCallResult.result``. Each validator is a
+    callable ``(value) -> value`` that can transform, redact, or
+    raise ``ValidatorError`` to reject the result.
+
+    Built-in validators ship as free functions in this module:
+
+    * :func:`length_cap(max_chars)` — hard cap on str / json-dumped
+      size, complementing ``ToolOutputTruncatorHook`` with a stricter
+      budget for specific tools.
+    * :func:`pii_redactor(patterns)` — regex-based replacement of
+      common PII (email, phone, SSN, ...) with ``[REDACTED]``.
+    * :func:`schema_check(json_schema)` — re-validate the output
+      against a JSON schema fragment; rejects on mismatch so a
+      hostile tool can't smuggle arbitrary data back into the LLM
+      context.
+
+    Usage::
+
+        hook = OutputValidatorHook(validators=[
+            length_cap(1500),
+            pii_redactor(),
+            schema_check({"type": "object", "required": ["status"]}),
+        ])
+
+    Validators are applied in list order. Any that raises
+    ``ValidatorError`` replaces the outcome with ``{"ok": False,
+    "error": "output validation: <reason>"}`` so the model can see
+    why its tool result was rejected.
+    """
+
+    points = frozenset({AFTER_TOOL})
+    priority = 30  # mutation tier, after truncation at 40
+
+    def __init__(self, *, validators: list[Callable[[Any], Any]]) -> None:
+        self.validators = list(validators)
+
+    def __call__(self, point: str, ctx: AgentContext, payload: ToolCallResult) -> HookResult | None:
+        if not payload.ok or not self.validators:
+            return None
+        current = payload.result
+        for validator in self.validators:
+            try:
+                current = validator(current)
+            except ValidatorError as e:
+                payload.result = None
+                payload.error = f"output validation: {e}"
+                return HookResult.replace(payload, reason=f"output rejected: {e}")
+        if current is payload.result:
+            return None
+        payload.result = current
+        return HookResult.replace(payload, reason="output transformed by validators")
+
+
+class ValidatorError(ValueError):
+    """Raised by validators passed to :class:`OutputValidatorHook` to
+    reject a tool's output wholesale. Distinguished from ``ValueError``
+    so unrelated ``ValueError``-raising transforms aren't swallowed."""
+
+
+def length_cap(max_chars: int) -> Callable[[Any], Any]:
+    """Validator: hard cap total output size, dict/list via JSON dump.
+
+    Different from :class:`ToolOutputTruncatorHook` in two ways:
+    (a) you can set a *lower* cap for specific tools via a targeted
+    validator pipeline, and (b) it raises ``ValidatorError`` when the
+    capped output still exceeds a sensible bound — catching
+    pathologically huge outputs that shouldn't just be silently
+    truncated (streaming a 10 MB blob into the LLM context is a bug,
+    not a truncation case).
+    """
+
+    def _apply(value: Any) -> Any:
+        if isinstance(value, str):
+            if len(value) <= max_chars:
+                return value
+            return value[:max_chars] + f"\n… (capped at {max_chars} chars)"
+        if isinstance(value, (dict, list)):
+            dumped = json.dumps(value, default=str)
+            if len(dumped) <= max_chars:
+                return value
+            # Reject wholesale — a huge dict that we'd have to truncate
+            # by re-parsing is almost always a sign of a misused tool
+            # (scraper returned the whole page, filesystem walk returned
+            # 100k paths, etc.). Surfacing the error lets the model
+            # switch to a more scoped call.
+            raise ValidatorError(f"output size {len(dumped)} > {max_chars} (too large; narrow the query)")
+        return value
+
+    return _apply
+
+
+_PII_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("email", re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)),
+    ("phone_us", re.compile(r"\b(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")),
+    ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
+    ("credit_card", re.compile(r"\b(?:\d[ -]?){13,19}\b")),
+)
+
+
+def pii_redactor(
+    patterns: tuple[tuple[str, re.Pattern[str]], ...] | None = None,
+    *,
+    marker: str = "[REDACTED]",
+) -> Callable[[Any], Any]:
+    """Validator: replace matches of common PII regexes with ``marker``.
+
+    Default pattern set covers email, US phone, SSN, credit-card
+    sequences. Pass your own tuple of ``(label, compiled_pattern)``
+    pairs to cover domain-specific PII (employee id, patient mrn,
+    dosage codes, ...). Matches inside nested dicts / lists are
+    redacted recursively.
+    """
+
+    active = patterns or _PII_PATTERNS
+
+    def _redact_str(s: str) -> str:
+        for _label, pat in active:
+            s = pat.sub(marker, s)
+        return s
+
+    def _apply(value: Any) -> Any:
+        if isinstance(value, str):
+            return _redact_str(value)
+        if isinstance(value, dict):
+            return {k: _apply(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_apply(v) for v in value]
+        return value
+
+    return _apply
+
+
+def schema_check(json_schema: dict[str, Any]) -> Callable[[Any], Any]:
+    """Validator: re-validate the output against a JSON schema fragment.
+
+    Uses the same minimal JSON-schema subset as
+    ``edgevox.llm.tools._validate_against_schema`` — ``type: object`` +
+    flat properties + ``required`` + ``enum``. Raises
+    ``ValidatorError`` on mismatch.
+    """
+
+    from edgevox.llm.tools import _validate_against_schema
+
+    def _apply(value: Any) -> Any:
+        if not isinstance(value, dict):
+            raise ValidatorError(f"expected object, got {type(value).__name__}")
+        err = _validate_against_schema(value, json_schema)
+        if err:
+            raise ValidatorError(err)
+        return value
+
+    return _apply
 
 
 class ContextWindowManager:

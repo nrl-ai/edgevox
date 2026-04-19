@@ -101,6 +101,8 @@ def agent_as_tool(
             interrupt=parent.interrupt,
             artifacts=parent.artifacts,
             seed=parent.seed,
+            trace_id=parent.trace_id,
+            parent_span_id=parent.parent_span_id,
         )
         result = agent.run(task, child_ctx)
         return result.reply or ""

@@ -1078,6 +1078,14 @@ class Compactor:
     keep_last_turns: int = 4
     # Maximum tokens for the summary itself.
     summary_max_tokens: int = 300
+    # Selective compaction: when True, messages in the "compress"
+    # window are split into (user/assistant turns → summarised) and
+    # (tool_calls + tool results → condensed audit trail, kept as a
+    # separate assistant message). Keeps the LLM aware of *what* was
+    # tried in the middle of the conversation without re-inflating the
+    # window with full tool payloads. Off by default (backwards
+    # compat) — enable when tool chains are the dominant token cost.
+    preserve_tool_calls: bool = False
 
     def should_compact(self, messages: list[dict], llm: LLM | None = None) -> bool:
         """Return True when compaction is warranted.
@@ -1106,16 +1114,41 @@ class Compactor:
         to_compress = body[: -self.keep_last_turns]
         keep = body[-self.keep_last_turns :]
 
-        summary = self._summarize(to_compress, llm)
-        summary_msg = {
-            "role": "assistant",
-            "content": f"(summary of earlier conversation)\n{summary}",
-        }
-
         out: list[dict] = []
         if system is not None:
             out.append(system)
-        out.append(summary_msg)
+
+        if self.preserve_tool_calls:
+            # Split ``to_compress`` into conversational turns and tool
+            # chains, summarise the former, render the latter as a
+            # terse audit trail. The audit trail keeps the model aware
+            # of what it's already tried (so it doesn't repeat) without
+            # re-inflating the context with raw tool payloads.
+            conv_only, tool_trace = _split_tool_chain(to_compress)
+            if conv_only:
+                conv_summary = self._summarize(conv_only, llm)
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": f"(summary of earlier conversation)\n{conv_summary}",
+                    }
+                )
+            if tool_trace:
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": "(tool-call trace from earlier this session)\n" + tool_trace,
+                    }
+                )
+        else:
+            summary = self._summarize(to_compress, llm)
+            out.append(
+                {
+                    "role": "assistant",
+                    "content": f"(summary of earlier conversation)\n{summary}",
+                }
+            )
+
         out.extend(keep)
         return out
 
@@ -1160,6 +1193,61 @@ def _fallback_summary(messages: list[dict]) -> str:
             snippet = content[:80].replace("\n", " ")
             lines.append(f"- {role}: {snippet}")
     return "\n".join(lines[:20])
+
+
+def _split_tool_chain(messages: list[dict]) -> tuple[list[dict], str]:
+    """Separate the compress-window into conversational turns + a
+    condensed tool-trace line. Used by ``Compactor`` when
+    ``preserve_tool_calls=True``.
+
+    Returns ``(conv_only, tool_trace)``:
+
+    * ``conv_only`` — user / assistant turns **without** ``tool_calls``
+      attached, suitable for LLM summarisation.
+    * ``tool_trace`` — multi-line human-readable audit of every
+      ``(tool_name, args_preview, result_preview)`` triple, kept as a
+      single assistant message so the model can read "I tried X, got
+      Y, tried Z, got W" without re-ingesting full JSON blobs.
+    """
+    conv: list[dict] = []
+    trace_lines: list[str] = []
+
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            # Collapse the just-seen tool-call names with their result.
+            name = m.get("name") or ""
+            content = m.get("content") or ""
+            if isinstance(content, str):
+                snippet = content[:120].replace("\n", " ")
+                if len(content) > 120:
+                    snippet += "…"
+            else:
+                snippet = str(content)[:120]
+            trace_lines.append(f"  → {name}: {snippet}")
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            # Record the call intent line; skip adding the assistant
+            # message to ``conv`` since its content is usually empty
+            # when a turn is pure tool-dispatch.
+            for call in m.get("tool_calls") or []:
+                fn = call.get("function", {}) if isinstance(call, dict) else {}
+                name = fn.get("name", "?")
+                args_raw = fn.get("arguments", "")
+                if isinstance(args_raw, str) and len(args_raw) > 60:
+                    args_raw = args_raw[:60] + "…"
+                trace_lines.append(f"- call {name}({args_raw})")
+            content = m.get("content") or ""
+            if isinstance(content, str) and content.strip():
+                conv.append({"role": "assistant", "content": content})
+            continue
+        # Plain user / assistant message.
+        conv.append(m)
+
+    trace = "\n".join(trace_lines[:40])  # hard cap — 40 entries is plenty
+    if len(trace_lines) > 40:
+        trace += f"\n… (+{len(trace_lines) - 40} more tool events)"
+    return conv, trace
 
 
 # ---------------------------------------------------------------------------

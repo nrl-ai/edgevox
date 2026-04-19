@@ -106,9 +106,20 @@ class AgentEvent:
         "hook_end_turn",
         "hook_modify",
         "render_request",
+        "span_start",
+        "span_end",
     ]
     agent_name: str
     payload: Any = None
+    # Tracing correlation — stable across a turn and forwarded through
+    # handoffs / ``spawn_subagent``. ``trace_id`` is root-of-turn,
+    # ``span_id`` identifies this event's span, ``parent_span_id``
+    # threads the hierarchy so OTel collectors can reconstruct the
+    # call tree. All three are None when the ctx wasn't seeded with a
+    # trace (backward-compat).
+    trace_id: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
 
 
 EventCallback = Callable[[AgentEvent], None]
@@ -173,6 +184,15 @@ class AgentContext:
     # ``ctx.rng`` instead of ``random.random()`` is what actually gives
     # reproducibility — global ``random`` is shared across everything.
     rng: random.Random = field(default_factory=random.Random)
+    # OTel-style tracing. ``trace_id`` is the root identifier for a
+    # user turn (stable across handoffs / sub-agents / retries).
+    # ``parent_span_id`` threads the hierarchy so a sub-agent knows
+    # which parent span it's under. ``None`` defaults keep backwards
+    # compat; a ``TracingHook`` auto-generates a root trace at
+    # ``on_run_start`` when none is already set. Propagated via the
+    # handoff and ``agent_as_tool`` plumbing.
+    trace_id: str | None = None
+    parent_span_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.on_event is not None:
@@ -181,9 +201,21 @@ class AgentContext:
             self.rng.seed(self.seed)
 
     def emit(self, kind: str, agent_name: str, payload: Any = None) -> None:
-        """Publish an :class:`AgentEvent` to the bus."""
+        """Publish an :class:`AgentEvent` to the bus.
+
+        Stamps the event with ``trace_id`` / ``parent_span_id`` from
+        this context when they're set — subscribers that care about
+        trace correlation (``TracingHook``, an OTel bridge) get it for
+        free; subscribers that don't just ignore the extra fields.
+        """
         self.bus.publish(
-            AgentEvent(kind=kind, agent_name=agent_name, payload=payload)  # type: ignore[arg-type]
+            AgentEvent(  # type: ignore[arg-type]
+                kind=kind,
+                agent_name=agent_name,
+                payload=payload,
+                trace_id=self.trace_id,
+                parent_span_id=self.parent_span_id,
+            )
         )
 
     def should_stop(self) -> bool:
@@ -556,6 +588,12 @@ class LLMAgent:
                 # sub-agent means the whole multi-agent run is
                 # reproducible end-to-end, not just the first leg.
                 seed=ctx.seed,
+                # Tracing rides through too: the sub-agent's root span
+                # is a child of the parent's current span, so the
+                # collector sees one connected tree per user turn
+                # rather than disconnected islands per agent.
+                trace_id=ctx.trace_id,
+                parent_span_id=ctx.parent_span_id,
             )
             # ``tool_registry``/``llm`` on the subagent ctx are installed
             # by the target's own ``run()`` — don't pre-seed from the
@@ -1031,6 +1069,8 @@ class LLMAgent:
             interrupt=parent_ctx.interrupt,
             artifacts=parent_ctx.artifacts,
             seed=parent_ctx.seed,
+            trace_id=parent_ctx.trace_id,
+            parent_span_id=parent_ctx.parent_span_id,
         )
         return sub.run(task, sub_ctx)
 

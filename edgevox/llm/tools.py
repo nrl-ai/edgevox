@@ -260,6 +260,20 @@ class ToolRegistry:
         """Return all tools as llama-cpp/OpenAI schema entries."""
         return [t.openai_schema() for t in self.tools.values()]
 
+    def fingerprint(self) -> str:
+        """Stable SHA-256 of the full tool manifest.
+
+        Use in cache-aware flows: compare the current fingerprint to
+        the one stored on ``ctx.state`` / elsewhere to detect
+        no-change across hops. When unchanged, the LLM prompt's
+        tool-schema section is byte-identical from llama.cpp's
+        perspective, so the KV cache reuses every token of the tools
+        block instead of re-evaluating them on each hop.
+        """
+        from edgevox.llm.prompt_cache import tool_schema_fingerprint
+
+        return tool_schema_fingerprint(self.openai_schemas())
+
     def dispatch(
         self,
         name: str,
