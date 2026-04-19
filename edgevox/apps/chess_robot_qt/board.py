@@ -20,7 +20,7 @@ import chess
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QWidget
+from PySide6.QtWidgets import QGraphicsScene, QGraphicsTextItem, QGraphicsView, QWidget
 
 from edgevox.apps.chess_robot_qt.settings import BOARD_THEMES, piece_set_dir
 
@@ -312,17 +312,28 @@ class ChessBoardView(QGraphicsView):
             file_sq_light = (file_chess + rank_bottom) % 2 == 1
             rank_sq_light = ((0 if self._orientation == "white" else 7) + rank_left) % 2 == 1
 
+            # Construct QGraphicsTextItem explicitly rather than
+            # ``scene.addText(text, font)`` — on PySide6 6.11 that
+            # overload routed through the QWidgetItem path in at
+            # least one user's build, causing
+            # ``AttributeError: 'QWidgetItem' object has no attribute
+            # 'setDefaultTextColor'``. Explicit construction +
+            # ``addItem`` avoids the overload confusion entirely.
             file_label = "abcdefgh"[file_chess]
-            t = self._scene.addText(file_label, label_font)
+            t = QGraphicsTextItem(file_label)
+            t.setFont(label_font)
             t.setDefaultTextColor(_opposite_tint(self._light if file_sq_light else self._dark))
             t.setOpacity(0.45)
             t.setPos(i * sz + sz * 0.80, 8 * sz - sz * 0.28)
+            self._scene.addItem(t)
 
             rank_label = str(rank_left + 1)
-            rt = self._scene.addText(rank_label, label_font)
+            rt = QGraphicsTextItem(rank_label)
+            rt.setFont(label_font)
             rt.setDefaultTextColor(_opposite_tint(self._light if rank_sq_light else self._dark))
             rt.setOpacity(0.45)
             rt.setPos(sz * 0.05, i * sz + sz * 0.01)
+            self._scene.addItem(rt)
 
     # ----- interaction -----
 

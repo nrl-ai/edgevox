@@ -863,6 +863,29 @@ class RookBridge:
             self._env.subscribe(lambda s: self.signals.chess_state_changed.emit(s))
             self._env.subscribe(self._persist_game_state)
 
+            # Warm the LLM's KV cache with a throw-away completion so
+            # the first real turn doesn't pay prompt-processing cold
+            # start (several seconds on CPU for a ~2 B model). Status
+            # is surfaced via ``load_progress`` so the loading panel
+            # tells the user what's happening. Failures are non-fatal
+            # — the turn will just pay the cold cost itself.
+            self.signals.load_progress.emit("warming up the chat model…")
+            try:
+                self._llm.complete(
+                    [
+                        {
+                            "role": "system",
+                            "content": "You are Rook, a chess robot. Warming up — reply with the single word 'ready'.",
+                        },
+                        {"role": "user", "content": "ready?"},
+                    ],
+                    max_tokens=4,
+                    temperature=0.1,
+                    stream=False,
+                )
+            except Exception:
+                log.exception("LLM warmup failed (non-fatal)")
+
             self._loaded = True
             self.signals.ready.emit()
             log.info("Rook ready.")

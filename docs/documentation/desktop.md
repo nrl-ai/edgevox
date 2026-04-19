@@ -345,6 +345,31 @@ Historical fixes the harness now guards against:
   "bold move").
 - **Non-move input duplicates** — gate tracks `last_gate_ply` in
   session state and short-circuits when the board hasn't advanced.
+- **Game-over attribution inversions** — small LLMs frequently said
+  "I'll keep playing" after being mated, or thanked the user for a
+  blunder. Terminal turns (mate / stalemate / draw) now bypass the
+  LLM entirely: `CommentaryGateHook._canned_game_end` picks a
+  per-persona templated closer (*"Mate. Well played."*, *"You got
+  me. This time."*, *"Stalemate — fair enough."*) and returns via
+  `HookResult.end`. Zero latency, zero attribution risk.
+
+### Chess commentary benchmark
+
+The [chess commentary benchmark](/documentation/reports/chess-commentary-benchmark)
+compares 25 LLMs across 36 scenarios (openings / midgame / endgame /
+terminal / color flips) and informs the default model choice +
+Settings picker ranking. Heuristic quality score alone is misleading —
+several models score 99-100 on the grader but fail semantic audit
+(echo SAN, invert mate attribution, recite the directive). The report
+documents methodology, decision matrix, and reproduction.
+
+Re-run after any gate or prompt change to catch regressions:
+
+```bash
+python scripts/bench_chess_commentary.py                 # full 25-model sweep
+python scripts/eval_llm_commentary.py --model gemma-4-e2b  # iterate on one model
+python scripts/analyze_bench_results.py                   # quality × speed Pareto
+```
 
 ## Packaging an installer
 

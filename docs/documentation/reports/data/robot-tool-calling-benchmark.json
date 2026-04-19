@@ -1,0 +1,276 @@
+{
+  "config": {
+    "temperature": 0.1,
+    "max_tokens": 128,
+    "n_ctx": 4096
+  },
+  "scenarios": [
+    {
+      "agent": "scout",
+      "name": "nav_kitchen",
+      "user": "Go to the kitchen.",
+      "expected_tool": "navigate_to_room",
+      "expected_args": {
+        "room": "kitchen"
+      },
+      "tags": []
+    },
+    {
+      "agent": "scout",
+      "name": "nav_bedroom",
+      "user": "Drive to the bedroom please.",
+      "expected_tool": "navigate_to_room",
+      "expected_args": {
+        "room": "bedroom"
+      },
+      "tags": []
+    },
+    {
+      "agent": "scout",
+      "name": "light_on_kitchen",
+      "user": "Turn on the kitchen light.",
+      "expected_tool": "turn_on_light",
+      "expected_args": {
+        "room": "kitchen"
+      },
+      "tags": []
+    },
+    {
+      "agent": "scout",
+      "name": "light_off_bedroom",
+      "user": "Turn off the bedroom lights.",
+      "expected_tool": "turn_off_light",
+      "expected_args": {
+        "room": "bedroom"
+      },
+      "tags": []
+    },
+    {
+      "agent": "scout",
+      "name": "query_battery",
+      "user": "What's your battery level?",
+      "expected_tool": "battery_level",
+      "expected_args": {},
+      "tags": []
+    },
+    {
+      "agent": "scout",
+      "name": "query_current_room",
+      "user": "Which room are you in right now?",
+      "expected_tool": "current_room",
+      "expected_args": {},
+      "tags": []
+    },
+    {
+      "agent": "scout",
+      "name": "list_rooms",
+      "user": "What rooms do you know about?",
+      "expected_tool": "list_rooms",
+      "expected_args": {},
+      "tags": []
+    },
+    {
+      "agent": "scout",
+      "name": "return_home",
+      "user": "Come back home.",
+      "expected_tool": "return_home",
+      "expected_args": {},
+      "tags": []
+    },
+    {
+      "agent": "scout",
+      "name": "light_check_kitchen",
+      "user": "Is the kitchen light on?",
+      "expected_tool": "light_state",
+      "expected_args": {
+        "room": "kitchen"
+      },
+      "tags": []
+    },
+    {
+      "agent": "scout",
+      "name": "conversational",
+      "user": "Hi Scout, how's it going?",
+      "expected_tool": null,
+      "expected_args": {},
+      "tags": [
+        "no-tool"
+      ]
+    }
+  ],
+  "models": [
+    {
+      "slug": "qwen2.5-1.5b",
+      "load_s": 5.343220826000106,
+      "error": null,
+      "avg_score": 90.0,
+      "tool_call_rate": 0.8888888888888888,
+      "scenarios": {
+        "scout/nav_kitchen": {
+          "agent": "scout",
+          "scenario": "nav_kitchen",
+          "user": "Go to the kitchen.",
+          "expected_tool": "navigate_to_room",
+          "expected_args": {
+            "room": "kitchen"
+          },
+          "predicted_tool": "navigate_to_room",
+          "predicted_args": {
+            "room": "kitchen"
+          },
+          "reply_text": "<tool_call>\n{\"name\": \"navigate_to_room\", \"arguments\": {\"room\": \"kitchen\"}}\n</tool_call>",
+          "score": 100,
+          "flags": [],
+          "elapsed_s": 14.838576973000272,
+          "tags": []
+        },
+        "scout/nav_bedroom": {
+          "agent": "scout",
+          "scenario": "nav_bedroom",
+          "user": "Drive to the bedroom please.",
+          "expected_tool": "navigate_to_room",
+          "expected_args": {
+            "room": "bedroom"
+          },
+          "predicted_tool": "navigate_to_room",
+          "predicted_args": {
+            "room": "bedroom"
+          },
+          "reply_text": "<tool_call>\n{\"name\": \"navigate_to_room\", \"arguments\": {\"room\": \"bedroom\"}}\n</tool_call>",
+          "score": 100,
+          "flags": [],
+          "elapsed_s": 3.031003649000013,
+          "tags": []
+        },
+        "scout/light_on_kitchen": {
+          "agent": "scout",
+          "scenario": "light_on_kitchen",
+          "user": "Turn on the kitchen light.",
+          "expected_tool": "turn_on_light",
+          "expected_args": {
+            "room": "kitchen"
+          },
+          "predicted_tool": "turn_on_light",
+          "predicted_args": {
+            "room": "kitchen"
+          },
+          "reply_text": "<tool_call>\n{\"name\": \"turn_on_light\", \"arguments\": {\"room\": \"kitchen\"}}\n</tool_call>",
+          "score": 100,
+          "flags": [],
+          "elapsed_s": 0.8821762349998608,
+          "tags": []
+        },
+        "scout/light_off_bedroom": {
+          "agent": "scout",
+          "scenario": "light_off_bedroom",
+          "user": "Turn off the bedroom lights.",
+          "expected_tool": "turn_off_light",
+          "expected_args": {
+            "room": "bedroom"
+          },
+          "predicted_tool": "turn_off_light",
+          "predicted_args": {
+            "room": "bedroom"
+          },
+          "reply_text": "<tool_call>\n{\"name\": \"turn_off_light\", \"arguments\": {\"room\": \"bedroom\"}}\n</tool_call>",
+          "score": 100,
+          "flags": [],
+          "elapsed_s": 1.7109422699995775,
+          "tags": []
+        },
+        "scout/query_battery": {
+          "agent": "scout",
+          "scenario": "query_battery",
+          "user": "What's your battery level?",
+          "expected_tool": "battery_level",
+          "expected_args": {},
+          "predicted_tool": "battery_level",
+          "predicted_args": {},
+          "reply_text": "<tool_call>\n{\"name\": \"battery_level\", \"arguments\": {}}\n</tool_call>",
+          "score": 100,
+          "flags": [],
+          "elapsed_s": 0.6737543930003085,
+          "tags": []
+        },
+        "scout/query_current_room": {
+          "agent": "scout",
+          "scenario": "query_current_room",
+          "user": "Which room are you in right now?",
+          "expected_tool": "current_room",
+          "expected_args": {},
+          "predicted_tool": "current_room",
+          "predicted_args": {},
+          "reply_text": "current_room()",
+          "score": 100,
+          "flags": [],
+          "elapsed_s": 0.3354553239996676,
+          "tags": []
+        },
+        "scout/list_rooms": {
+          "agent": "scout",
+          "scenario": "list_rooms",
+          "user": "What rooms do you know about?",
+          "expected_tool": "list_rooms",
+          "expected_args": {},
+          "predicted_tool": null,
+          "predicted_args": {},
+          "reply_text": "I know about the living room, kitchen, bedroom, and office.",
+          "score": 0,
+          "flags": [
+            "no tool call emitted"
+          ],
+          "elapsed_s": 0.6582706959998177,
+          "tags": []
+        },
+        "scout/return_home": {
+          "agent": "scout",
+          "scenario": "return_home",
+          "user": "Come back home.",
+          "expected_tool": "return_home",
+          "expected_args": {},
+          "predicted_tool": "return_home",
+          "predicted_args": {},
+          "reply_text": "<tool_call>\n{\"name\": \"return_home\", \"arguments\": {}}\n</tool_call>",
+          "score": 100,
+          "flags": [],
+          "elapsed_s": 0.5933944649996192,
+          "tags": []
+        },
+        "scout/light_check_kitchen": {
+          "agent": "scout",
+          "scenario": "light_check_kitchen",
+          "user": "Is the kitchen light on?",
+          "expected_tool": "light_state",
+          "expected_args": {
+            "room": "kitchen"
+          },
+          "predicted_tool": "light_state",
+          "predicted_args": {
+            "room": "kitchen"
+          },
+          "reply_text": "<tool_call>\n{\"name\": \"light_state\", \"arguments\": {\"room\": \"kitchen\"}}\n</tool_call>",
+          "score": 100,
+          "flags": [],
+          "elapsed_s": 0.7824980139994295,
+          "tags": []
+        },
+        "scout/conversational": {
+          "agent": "scout",
+          "scenario": "conversational",
+          "user": "Hi Scout, how's it going?",
+          "expected_tool": null,
+          "expected_args": {},
+          "predicted_tool": null,
+          "predicted_args": {},
+          "reply_text": "Hello! I'm just a simple robot here to help you. How can I assist you today?",
+          "score": 100,
+          "flags": [],
+          "elapsed_s": 0.7511486630000945,
+          "tags": [
+            "no-tool"
+          ]
+        }
+      }
+    }
+  ]
+}
