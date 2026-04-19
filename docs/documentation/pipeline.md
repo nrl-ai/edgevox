@@ -11,7 +11,7 @@ Every turn goes through one of two paths, chosen per-mode:
    bus. This is the default in the TUI, simple-voice, text-mode, and the
    WebSocket server when `ServerCore.agent` is bound (via
    `edgevox-serve --agent module:factory`). See
-   [agent-loop](/guide/agent-loop) for the full lifecycle.
+   [agent-loop](/documentation/agent-loop) for the full lifecycle.
 2. **Legacy streaming path** — `LLM.chat_stream` yields tokens which
    `stream_sentences` splits into TTS chunks. Lower first-TTS latency
    on long replies but no hooks, no tools, no events. Used by the

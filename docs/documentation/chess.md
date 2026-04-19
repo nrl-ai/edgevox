@@ -71,9 +71,9 @@ typed `ChessState` snapshot to every subscribed listener on each mutation.
 | `BoardStateInjectionHook`    | `on_run_start` | Prepend compact FEN + last-move + eval    |
 | `MoveCommentaryHook`         | `after_tool`   | Stash the latest state for commentary     |
 
-Both hooks are declared once in `AgentApp(hooks=[...])`. Per
-[ADR-002](/adr/002-typed-ctx-hook-state), state lives under
-`ctx.hook_state[id(self)]` so two hook instances don't share buffers.
+Both hooks are declared once in `AgentApp(hooks=[...])`. Per-instance
+state lives under `ctx.hook_state[id(self)]` so two hook instances
+don't share buffers.
 
 ## Analytics
 

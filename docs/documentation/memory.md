@@ -112,7 +112,6 @@ SOTA research (Letta/MemGPT, Mem0, Zep/Graphiti, Anthropic memory tool) suggests
 - **Vector retrieval** (PR-14+): optional `VectorMemoryStore` backed by sqlite-vec + llama.cpp embedding mode — offline, MIT, reuses the already-loaded llama runtime.
 - **Importance/decay scoring**: prioritise episodes by recency × access × self-assigned importance rather than FIFO.
 
-See the harness refactor history under `docs/adr/` for what's been adopted and why.
 
 ## See also
 

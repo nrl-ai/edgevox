@@ -174,7 +174,7 @@ EdgeVox uses:
 3. `TTSWorker.interrupt()` cuts playback; `Bridge.cancel_turn()` trips
    the controller which plumbs `cancel_token` into
    `LLM.complete(stop_event=…)` — llama-cpp halts within one decode step
-   (ADR-001).
+  .
 4. `ctx.stop` flips so the agent loop exits between hops.
 
 The recorder is linked to the global `InterruptiblePlayer`, so TTS

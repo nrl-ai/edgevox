@@ -8,7 +8,7 @@ hero:
   actions:
     - theme: brand
       text: Get Started
-      link: /guide/
+      link: /documentation/
     - theme: alt
       text: View on GitHub
       link: https://github.com/vietanhdev/edgevox
@@ -39,12 +39,12 @@ features:
   - title: Ships as a desktop app
     icon: 💻
     details: "RookApp is a reference PySide6 build — Qt UI, LLMAgent, llama-cpp, and Stockfish all in one Python process. No browser, no web server, no Node, no Tauri."
-    link: /guide/desktop
+    link: /documentation/desktop
     linkText: RookApp guide →
   - title: Pluggable harness
     icon: 🧩
     details: "Swap any STT / TTS / LLM / VAD / hook / skill / tool / parser via Protocols + registries. Six hook fire-points, priority ordering, typed AgentContext."
-    link: /guide/agent-loop
+    link: /documentation/agent-loop
     linkText: Agent loop →
 ---
 

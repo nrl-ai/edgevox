@@ -2,7 +2,7 @@
 
 A top-down map of every package inside `edgevox/`. One section per module: what it's for, how the pieces fit, and where you plug in your own implementation.
 
-If you want the dataflow-level view instead, see [Architecture](/guide/architecture) and [Voice Pipeline](/guide/pipeline). This page is the *structural* view — classes, protocols, and swap points.
+If you want the dataflow-level view instead, see [Architecture](/documentation/architecture) and [Voice Pipeline](/documentation/pipeline). This page is the *structural* view — classes, protocols, and swap points.
 
 ## Package map at a glance
 
@@ -64,7 +64,7 @@ flowchart LR
 **Key pieces.**
 
 - `AudioRecorder` — listens on a mic, runs Silero VAD on 32 ms frames, emits a full utterance once speech ends. Also exposes `on_level` for UI meters and `on_interrupt` so the player can duck while the user is talking.
-- `InterruptiblePlayer` / `play_audio` — opens one persistent PortAudio output stream and a numpy ring buffer. A callback drains the buffer on every audio tick and pads silence on underrun. `interrupt()` flushes the buffer; it never touches the stream itself. See [ADR-001](/adr/001-cancel-token-plumbing) for why this matters.
+- `InterruptiblePlayer` / `play_audio` — opens one persistent PortAudio output stream and a numpy ring buffer. A callback drains the buffer on every audio tick and pads silence on underrun. `interrupt()` flushes the buffer; it never touches the stream itself — opening/closing streams is slow enough to starve the event loop.
 - `create_aec(backend)` — strategy-pattern factory for echo cancellation. Implementations in `aec.py`: `none`, `nlms`, `specsub`, `dtln`. The player pushes the played signal into a lock-free `_RefBuffer` that the recorder consumes as the AEC reference.
 - `WakeWordDetector` — optional openWakeWord-style ONNX model that can gate the pipeline until a trigger phrase.
 
@@ -200,11 +200,11 @@ flowchart LR
 
 **Key pieces.**
 
-- `LLM` (`llamacpp.py`) — thread-safe wrapper. Core methods: `chat_stream(messages, stop_event=…)`, `count_tokens()`. The `stop_event` threads `ctx.interrupt.cancel_token` straight into llama.cpp's `stopping_criteria` so barge-in halts generation within one decode step ([ADR-001](/adr/001-cancel-token-plumbing)).
+- `LLM` (`llamacpp.py`) — thread-safe wrapper. Core methods: `chat_stream(messages, stop_event=…)`, `count_tokens()`. The `stop_event` threads `ctx.interrupt.cancel_token` straight into llama.cpp's `stopping_criteria` so barge-in halts generation within one decode step.
 - `Tool`, `ToolRegistry`, `@tool` (`tools.py`) — decorator-based tool registry. `load_entry_point_tools()` lets third-party packages ship tools via Python entry points.
 - `ModelPreset`, `PRESETS`, `resolve_preset()` (`models.py`) — every preset declares its chat template, stop tokens, and `tool_call_parsers=(...)`. `resolve_preset()` *validates every parser name against the detector registry at load time*, so a typo fails loudly.
 - `tool_parsers/` — a chain of detectors, one per model family. Critical detail: `parse_tool_calls_from_content` tries detectors against *raw* content *before* stripping `<think>` blocks, because Qwen3 emits tool calls inside reasoning blocks.
-- `grammars.py` — GBNF grammar builders for grammar-constrained decoding ([ADR-003](/adr/003-grammar-constrained-decoding)).
+- `grammars.py` — GBNF grammar builders for grammar-constrained decoding.
 - `hooks_slm.py` — `default_slm_hooks()` bundle that hardens small models (output repair, JSON coaxing, token budgets).
 - `_agent_harness.py` — internal harness used by `LLMAgent`. Prefer the public surface in `edgevox.agents`.
 
@@ -272,12 +272,12 @@ flowchart TB
 **Key pieces.**
 
 - `Agent` (Protocol), `LLMAgent`, `Session`, `AgentContext`, `AgentResult`, `Handoff` (`base.py`) — the polymorphic heart. Workflows are agents too; `Sequence([a, b])` is itself an `Agent`.
-- Hooks — the main extension surface. See [Hooks](/guide/hooks) for the full matrix. Hook-owned state lives under `ctx.hook_state[id(self)]` ([ADR-002](/adr/002-typed-ctx-hook-state)).
+- Hooks — the main extension surface. See [Hooks](/documentation/hooks) for the full matrix. Hook-owned state lives under `ctx.hook_state[id(self)]`.
 - `Skill` / `@skill` / `GoalHandle` — cancellable async actions, distinct from `@tool`. Cancellation is real: `ctx.stop` threads into the skill's cooperative check.
 - Workflows (`workflow.py`) — Behaviour-Tree-flavoured combinators. Nothing clever; they just schedule child agents.
 - Memory (`memory.py`) — `MemoryStore` (long-term facts), `SessionStore` (turn history), `NotesFile` (human-editable scratchpad), `Compactor` (LLM-driven summarization when the window fills).
 - Multi-agent (`multiagent.py`) — `Blackboard` for shared state, `BackgroundAgent` / `AgentPool` for parallel agents, inbox messaging.
-- `InterruptController` (`interrupt.py`) — the barge-in coordinator. Plumbing is covered in [Interrupt](/guide/interrupt).
+- `InterruptController` (`interrupt.py`) — the barge-in coordinator. Plumbing is covered in [Interrupt](/documentation/interrupt).
 - `ArtifactStore` (`artifacts.py`) — file-like store for structured agent-to-agent handoffs.
 - `sim.py` — `SimEnvironment` protocol and `ToyWorld` stdlib reference env for tests.
 
@@ -343,7 +343,7 @@ flowchart LR
 
 **Key pieces.**
 
-- `tui.py` — Textual app. Layers a live waveform, model-info panel, sparkline latency history, and slash commands (`/model`, `/voice`, `/lang`, `/reset`) on top of the pipeline. See [TUI Commands](/guide/commands).
+- `tui.py` — Textual app. Layers a live waveform, model-info panel, sparkline latency history, and slash commands (`/model`, `/voice`, `/lang`, `/reset`) on top of the pipeline. See [TUI Commands](/documentation/commands).
 - `cli/main.py` — minimal voice bot and text bot for scripting / headless boxes.
 - `ui/` — placeholder for reusable TUI widgets (currently empty; widgets live inside `tui.py` for now).
 - Console scripts in `pyproject.toml`: `edgevox` → `tui:main`, `edgevox-cli` → `cli.main:main`, `edgevox-setup` → `setup_models:main`.
@@ -386,9 +386,9 @@ flowchart TB
 
 **Key pieces.**
 
-- `integrations/ros2_bridge.py`, `ros2_actions.py`, `ros2_robot.py`, `ros2_qos.py` — maps `Skill` goals to ROS2 actions with consistent QoS settings. See [ROS2 Integration](/guide/ros2).
+- `integrations/ros2_bridge.py`, `ros2_actions.py`, `ros2_robot.py`, `ros2_qos.py` — maps `Skill` goals to ROS2 actions with consistent QoS settings. See [ROS2 Integration](/documentation/ros2).
 - `integrations/sim/` — `IrSimEnvironment` (2D, matplotlib), `MujocoArmEnvironment`, `MujocoHumanoidEnvironment`, `ExternalROS2Environment`. Each implements the `SimEnvironment` protocol from `edgevox.agents.sim` so agent code is sim-agnostic.
-- `integrations/chess/` — reference desktop application (see [Chess](/guide/chess) and [RookApp](/guide/desktop)). Persona + engine plug-ins are themselves `Agent` implementations.
+- `integrations/chess/` — reference desktop application (see [Chess](/documentation/chess) and [RookApp](/documentation/desktop)). Persona + engine plug-ins are themselves `Agent` implementations.
 
 **Swap point.** Every integration is opt-in and lives behind its own dependency. Add a new one by implementing the relevant protocol (`SimEnvironment`, `Skill`, `Agent`) and shipping it as its own package if you like.
 
@@ -396,8 +396,8 @@ flowchart TB
 
 ## Where to go next
 
-- [Architecture](/guide/architecture) — streaming pipeline and latency budget
-- [Voice Pipeline](/guide/pipeline) — agent path vs legacy streaming path
-- [Agent loop](/guide/agent-loop) — the six fire points in `LLMAgent.run()`
-- [Hooks](/guide/hooks) — extension surface reference
-- [Tool calling](/guide/tool-calling) — parser chain and GBNF roadmap
+- [Architecture](/documentation/architecture) — streaming pipeline and latency budget
+- [Voice Pipeline](/documentation/pipeline) — agent path vs legacy streaming path
+- [Agent loop](/documentation/agent-loop) — the six fire points in `LLMAgent.run()`
+- [Hooks](/documentation/hooks) — extension surface reference
+- [Tool calling](/documentation/tool-calling) — parser chain and GBNF roadmap

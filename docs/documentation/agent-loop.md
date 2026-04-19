@@ -28,7 +28,7 @@ flowchart TD
 
 2. **Handoff-as-return-value.** A synthetic `handoff_to_<agent>` tool returns a `Handoff` sentinel; the loop transfers control to the target without a second LLM hop on the router. Matches OpenAI Agents SDK semantics (`edgevox/agents/base.py`).
 
-3. **Interrupt pre-emption at three points.** The loop checks `ctx.should_stop()` (a) before each hop, (b) between parallel tool dispatches, and (c) — via `stop_event` threaded into llama-cpp — between sampled tokens. See [ADR-001](../adr/001-cancel-token-plumbing.md).
+3. **Interrupt pre-emption at three points.** The loop checks `ctx.should_stop()` (a) before each hop, (b) between parallel tool dispatches, and (c) — via `stop_event` threaded into llama-cpp — between sampled tokens.
 
 4. **Six fire points, in fixed order.** `ON_RUN_START → BEFORE_LLM → AFTER_LLM → (BEFORE_TOOL → dispatch → AFTER_TOOL)* → ON_RUN_END`. The `BEFORE_TOOL`/`AFTER_TOOL` pair fires per tool in parallel; the others are per-turn. Hooks see payloads defined in [`hooks.md`](./hooks.md).
 
@@ -48,7 +48,7 @@ class AgentContext:
     state: dict[str, Any] = field(default_factory=dict)  # user scratch
 ```
 
-Hooks that need the LLM (e.g. `ContextCompactionHook` for summarisation, `TokenBudgetHook` for exact token counts) read `ctx.llm`. Hooks that need per-instance state (fingerprint counters, retry budgets) write to `ctx.hook_state[id(self)]`. The legacy `ctx.state["__tool_registry__"]` / `["__llm__"]` keys still work for one release but are deprecated. See [ADR-002](../adr/002-typed-ctx-hook-state.md).
+Hooks that need the LLM (e.g. `ContextCompactionHook` for summarisation, `TokenBudgetHook` for exact token counts) read `ctx.llm`. Hooks that need per-instance state (fingerprint counters, retry budgets) write to `ctx.hook_state[id(self)]`. The legacy `ctx.state["__tool_registry__"]` / `["__llm__"]` keys still work for one release but are deprecated.
 
 ## Parallel tool dispatch
 
@@ -94,4 +94,3 @@ The subagent runs with a **fresh `Session`** (clean history) but the same `deps`
 - [`hooks.md`](./hooks.md) — authoring hooks; payload shapes per fire point.
 - [`interrupt.md`](./interrupt.md) — barge-in + cancel-token semantics.
 - [`tool-calling.md`](./tool-calling.md) — parser chain and grammar-constrained decoding.
-- [ADR-001](../adr/001-cancel-token-plumbing.md), [ADR-002](../adr/002-typed-ctx-hook-state.md).

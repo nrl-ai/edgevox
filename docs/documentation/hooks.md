@@ -83,7 +83,7 @@ class MyHook:
         ...
 ```
 
-See [ADR-002](../adr/002-typed-ctx-hook-state.md) for why this replaced the old `ctx.session.state["__xxx__"]` magic-key pattern.
+This replaced the old `ctx.session.state["__xxx__"]` magic-key pattern, which leaked hook internals into the user-visible `ctx.state` dict and caused silent collisions between two instances of the same hook class.
 
 ## Typed ctx fields
 
@@ -169,4 +169,3 @@ def test_my_hook_short_circuits():
 
 - [`agent-loop.md`](./agent-loop.md) — the loop itself.
 - [`interrupt.md`](./interrupt.md) — how hooks cooperate with barge-in.
-- [ADR-002](../adr/002-typed-ctx-hook-state.md) — hook-owned state rationale.

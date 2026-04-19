@@ -11,7 +11,7 @@ Voice-agent UX lives or dies on how fast the pipeline shuts up when the user sta
 | LLM generation stops | **≤40 ms after trigger** | `cancel_token` piped into llama-cpp `stopping_criteria` |
 | Skill cancel (opt-in) | <200 ms | poll loop inside `_dispatch_skill` |
 
-The LLM number is the one that matters — before PR-1 wired the `cancel_token` through, a barge-in during a long reply left the LLM grinding through `max_tokens` for seconds. See [ADR-001](../adr/001-cancel-token-plumbing.md).
+The LLM number is the one that matters — before PR-1 wired the `cancel_token` through, a barge-in during a long reply left the LLM grinding through `max_tokens` for seconds.
 
 ## Two signals
 
@@ -175,6 +175,5 @@ Handler exceptions are logged but don't propagate.
 
 ## See also
 
-- [ADR-001](../adr/001-cancel-token-plumbing.md) — why `cancel_token` exists.
 - [`agent-loop.md`](./agent-loop.md) — where the loop checks `ctx.should_stop()`.
 - [`pipeline.md`](./pipeline.md) — how the audio stack plugs in.

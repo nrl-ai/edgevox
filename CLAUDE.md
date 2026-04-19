@@ -49,22 +49,20 @@ Models are hosted on `nrl-ai/edgevox-models` (HuggingFace) with fallback to upst
 
 ## Agent harness architecture
 
-The agent harness (`edgevox/agents/` + `edgevox/llm/hooks_slm.py` + `edgevox/llm/tool_parsers/`) is fully documented under `docs/guide/`:
+The agent harness (`edgevox/agents/` + `edgevox/llm/hooks_slm.py` + `edgevox/llm/tool_parsers/`) is fully documented under `docs/documentation/`:
 
-- [`agent-loop.md`](docs/guide/agent-loop.md) — the six-fire-point loop, parallel dispatch, handoff short-circuit.
-- [`hooks.md`](docs/guide/hooks.md) — hook authoring contract, built-ins, ordering rules.
-- [`memory.md`](docs/guide/memory.md) — `MemoryStore` / `SessionStore` / `NotesFile` / `Compactor`.
-- [`interrupt.md`](docs/guide/interrupt.md) — barge-in signals + cancel-token plumbing.
-- [`multiagent.md`](docs/guide/multiagent.md) — Blackboard, BackgroundAgent, AgentPool.
-- [`tool-calling.md`](docs/guide/tool-calling.md) — parser chain + grammar-constrained decoding roadmap.
-
-Structural decisions with long-term consequences are captured under `docs/adr/`. Add a new ADR (numbered sequentially, short template: Context / Decision / Alternatives / Consequences / Verification) when a change locks in public API shape, a thread-safety contract, or a new required dep.
+- [`agent-loop.md`](docs/documentation/agent-loop.md) — the six-fire-point loop, parallel dispatch, handoff short-circuit.
+- [`hooks.md`](docs/documentation/hooks.md) — hook authoring contract, built-ins, ordering rules.
+- [`memory.md`](docs/documentation/memory.md) — `MemoryStore` / `SessionStore` / `NotesFile` / `Compactor`.
+- [`interrupt.md`](docs/documentation/interrupt.md) — barge-in signals + cancel-token plumbing.
+- [`multiagent.md`](docs/documentation/multiagent.md) — Blackboard, BackgroundAgent, AgentPool.
+- [`tool-calling.md`](docs/documentation/tool-calling.md) — parser chain + grammar-constrained decoding roadmap.
 
 ### Harness rules
 
 - **Typed `AgentContext` fields** (`ctx.tool_registry`, `ctx.llm`, `ctx.interrupt`, `ctx.memory`, `ctx.artifacts`, `ctx.blackboard`) are the public plumbing surface. `ctx.state` is user-only scratch — framework code must not write magic keys there.
-- **Hook-owned state** lives under `ctx.hook_state[id(self)]`. Keying by `id(self)` is what guarantees two instances of the same hook class don't share state. See [ADR-002](docs/adr/002-typed-ctx-hook-state.md).
-- **Barge-in is enforceable, not advisory.** Every `LLM.complete` call threads `ctx.interrupt.cancel_token` via `stop_event=…` so llama-cpp's `stopping_criteria` actually halts generation within one decode step. See [ADR-001](docs/adr/001-cancel-token-plumbing.md).
+- **Hook-owned state** lives under `ctx.hook_state[id(self)]`. Keying by `id(self)` is what guarantees two instances of the same hook class don't share state.
+- **Barge-in is enforceable, not advisory.** Every `LLM.complete` call threads `ctx.interrupt.cancel_token` via `stop_event=…` so llama-cpp's `stopping_criteria` actually halts generation within one decode step.
 - **Tokenizer-exact token counts.** `estimate_tokens(messages, llm)` and `LLM.count_tokens` replace the `chars // 4` heuristic when an LLM is available. Required for correct context-window decisions on CJK / Vietnamese / Thai.
 - **Tool-call parsing runs raw-first.** `parse_tool_calls_from_content` tries detectors against the raw content before stripping `<think>` blocks — Qwen3 emits tool calls inside reasoning blocks (see [llama.cpp#20837](https://github.com/ggml-org/llama.cpp/issues/20837)).
 - **Preset parsers are validated at load.** `resolve_preset(slug)` asserts every name in `tool_call_parsers=(...)` is a registered detector; a typo fails loudly rather than silently disabling detection.

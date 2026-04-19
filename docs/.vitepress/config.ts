@@ -11,6 +11,14 @@ export default withMermaid(
     srcDir: ".",
     cleanUrls: true,
 
+    // ``plan.md`` and ``reports/`` are internal planning artefacts we
+    // don't want on the public site — excluded from the build.
+    srcExclude: ["reports/**", "plan.md"],
+
+    // Only the excluded planning artefacts should be tolerated as
+    // dead-link targets; anything else going red must fail the build.
+    ignoreDeadLinks: [/^\/plan/, /^\/reports\//],
+
     head: [
       ["link", { rel: "icon", type: "image/svg+xml", href: "/logo.svg" }],
       [
@@ -28,9 +36,7 @@ export default withMermaid(
       },
 
       nav: [
-        { text: "Guide", link: "/guide/" },
-        { text: "Reference", link: "/reference/cli" },
-        { text: "ADRs", link: "/adr/001-cancel-token-plumbing" },
+        { text: "Documentation", link: "/documentation/" },
         {
           text: "Links",
           items: [
@@ -41,59 +47,38 @@ export default withMermaid(
       ],
 
       sidebar: {
-        "/guide/": [
+        "/documentation/": [
           {
             text: "Getting Started",
             items: [
-              { text: "Introduction", link: "/guide/" },
-              { text: "Quick Start", link: "/guide/quickstart" },
-              { text: "Architecture", link: "/guide/architecture" },
-              { text: "Component Design", link: "/guide/components" },
+              { text: "Introduction", link: "/documentation/" },
+              { text: "Quick Start", link: "/documentation/quickstart" },
+              { text: "Architecture", link: "/documentation/architecture" },
+              { text: "Component Design", link: "/documentation/components" },
             ],
           },
           {
             text: "Features",
             items: [
-              { text: "Languages", link: "/guide/languages" },
-              { text: "Voice Pipeline", link: "/guide/pipeline" },
-              { text: "Agents & Tools", link: "/guide/agents" },
-              { text: "TUI Commands", link: "/guide/commands" },
-              { text: "ROS2 Integration", link: "/guide/ros2" },
-              { text: "Chess Partner", link: "/guide/chess" },
-              { text: "RookApp (Desktop)", link: "/guide/desktop" },
+              { text: "Languages", link: "/documentation/languages" },
+              { text: "Voice Pipeline", link: "/documentation/pipeline" },
+              { text: "Agents & Tools", link: "/documentation/agents" },
+              { text: "TUI Commands", link: "/documentation/commands" },
+              { text: "ROS2 Integration", link: "/documentation/ros2" },
+              { text: "Chess Partner", link: "/documentation/chess" },
+              { text: "RookApp (Desktop)", link: "/documentation/desktop" },
             ],
           },
           {
             text: "Harness Architecture",
             collapsed: false,
             items: [
-              { text: "Agent loop", link: "/guide/agent-loop" },
-              { text: "Hooks", link: "/guide/hooks" },
-              { text: "Memory", link: "/guide/memory" },
-              { text: "Multi-agent", link: "/guide/multiagent" },
-              { text: "Interrupt & barge-in", link: "/guide/interrupt" },
-              { text: "Tool calling", link: "/guide/tool-calling" },
-            ],
-          },
-        ],
-        "/reference/": [
-          {
-            text: "Reference",
-            items: [
-              { text: "CLI", link: "/reference/cli" },
-              { text: "Server API", link: "/reference/server-api" },
-              { text: "Configuration", link: "/reference/config" },
-              { text: "Language Config", link: "/reference/languages" },
-            ],
-          },
-        ],
-        "/adr/": [
-          {
-            text: "Architecture Decisions",
-            items: [
-              { text: "001 — Cancel-token plumbing", link: "/adr/001-cancel-token-plumbing" },
-              { text: "002 — Typed ctx + hook-owned state", link: "/adr/002-typed-ctx-hook-state" },
-              { text: "003 — GBNF tool decoding", link: "/adr/003-grammar-constrained-decoding" },
+              { text: "Agent loop", link: "/documentation/agent-loop" },
+              { text: "Hooks", link: "/documentation/hooks" },
+              { text: "Memory", link: "/documentation/memory" },
+              { text: "Multi-agent", link: "/documentation/multiagent" },
+              { text: "Interrupt & barge-in", link: "/documentation/interrupt" },
+              { text: "Tool calling", link: "/documentation/tool-calling" },
             ],
           },
         ],

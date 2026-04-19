@@ -187,7 +187,7 @@ AgentApp(
 ).run()
 ```
 
-Launch with `python my_agent.py --text-mode` and you have a voice-controllable robot running on a stdlib-only reference sim. Swap `ToyWorld()` for `IrSimEnvironment()` and a matplotlib window opens. Full guide: [`docs/guide/agents.md`](docs/guide/agents.md).
+Launch with `python my_agent.py --text-mode` and you have a voice-controllable robot running on a stdlib-only reference sim. Swap `ToyWorld()` for `IrSimEnvironment()` and a matplotlib window opens. Full guide: [`docs/documentation/agents.md`](docs/documentation/agents.md).
 
 The five built-in agents are subcommands of `edgevox-agent`:
 
@@ -226,7 +226,7 @@ edgevox-setup
 edgevox-chess-robot
 ```
 
-Flags: `--persona {grandmaster,casual,trash_talker}`, `--user-plays {white,black}`, `--engine {stockfish,maia}`, `--stockfish-skill 0..20`, `--maia-weights PATH`, `-v`. Every flag also reads an `EDGEVOX_CHESS_*` env var. Piece set, board theme, persona, audio devices, and debug-mode settings live in the in-app **☰ → Settings…** dialog. Preferences persist via `QSettings`. Full guide: [`docs/guide/desktop.md`](docs/guide/desktop.md).
+Flags: `--persona {grandmaster,casual,trash_talker}`, `--user-plays {white,black}`, `--engine {stockfish,maia}`, `--stockfish-skill 0..20`, `--maia-weights PATH`, `-v`. Every flag also reads an `EDGEVOX_CHESS_*` env var. Piece set, board theme, persona, audio devices, and debug-mode settings live in the in-app **☰ → Settings…** dialog. Preferences persist via `QSettings`. Full guide: [`docs/documentation/desktop.md`](docs/documentation/desktop.md).
 
 ## Simulation tiers
 
@@ -264,7 +264,7 @@ edgevox-cli --text-mode         # no microphone needed
 
 Models are hosted on [`nrl-ai/edgevox-models`](https://huggingface.co/nrl-ai/edgevox-models) (HuggingFace) with fallback to upstream repos.
 
-Full TUI + slash-command reference: [`docs/guide/commands.md`](docs/guide/commands.md).
+Full TUI + slash-command reference: [`docs/documentation/commands.md`](docs/documentation/commands.md).
 
 ## Hardware requirements
 
@@ -294,7 +294,7 @@ edgevox-agent robot-external --text-mode            # drive an external ROS2 rob
 
 **Actions**: `execute_skill` (`edgevox_msgs/action/ExecuteSkill`) — generic `skill_name` + `arguments_json` goal so any agent skill is callable by a stock `rclpy.action.ActionClient`. Build the companion interface package with `colcon build --packages-select edgevox_msgs`.
 
-Launch files under `launch/`: `edgevox.launch.py`, `edgevox_irsim.launch.py`, `edgevox_panda.launch.py`. Full reference: [`docs/guide/ros2.md`](docs/guide/ros2.md).
+Launch files under `launch/`: `edgevox.launch.py`, `edgevox_irsim.launch.py`, `edgevox_panda.launch.py`. Full reference: [`docs/documentation/ros2.md`](docs/documentation/ros2.md).
 
 ## Architecture
 
@@ -350,31 +350,24 @@ Full architecture writeup: [`docs/plan.md`](docs/plan.md) — grounded in cross-
 
 ## Documentation
 
-- **[Agents & Tools guide](docs/guide/agents.md)** — full agent framework reference: tools vs skills, workflows, safety monitor, simulation tiers, threading model, anti-patterns
+- **[Agents & Tools guide](docs/documentation/agents.md)** — full agent framework reference: tools vs skills, workflows, safety monitor, simulation tiers, threading model, anti-patterns
 - **[Architecture plan](docs/plan.md)** — v4 plan grounded in 8-framework + 7-sim comparison
-- **[Quick start](docs/guide/quickstart.md)**
-- **[TUI commands](docs/guide/commands.md)**
-- **[CLI reference](docs/reference/cli.md)**
-- **[ROS2 guide](docs/guide/ros2.md)** — bridge topics, services, `execute_skill` action, TF2 / Nav2 / sensor interop, launch files
+- **[Quick start](docs/documentation/quickstart.md)**
+- **[TUI commands](docs/documentation/commands.md)**
+- **[ROS2 guide](docs/documentation/ros2.md)** — bridge topics, services, `execute_skill` action, TF2 / Nav2 / sensor interop, launch files
 
 ### Harness architecture
 
 In-depth docs for each subsystem of the agent harness:
 
-- **[Agent loop](docs/guide/agent-loop.md)** — six-fire-point loop, parallel dispatch, handoff short-circuit, cancel-token plumbing
-- **[Hooks](docs/guide/hooks.md)** — fire points, payloads, priority scale, built-ins, SLM hardening
-- **[Memory](docs/guide/memory.md)** — `MemoryStore` / `SessionStore` / `Compactor` / `NotesFile`, bi-temporal facts
-- **[Multi-agent](docs/guide/multiagent.md)** — Blackboard, Supervisor, Orchestrator, BackgroundAgent (OTP restart policies)
-- **[Interrupt & barge-in](docs/guide/interrupt.md)** — `cancel_token` to llama-cpp `stopping_criteria`, AEC defaults, repeatable interrupts
-- **[Tool calling](docs/guide/tool-calling.md)** — parser chain, GBNF grammar-constrained decoding, `tool_choice_policy`
+- **[Agent loop](docs/documentation/agent-loop.md)** — six-fire-point loop, parallel dispatch, handoff short-circuit, cancel-token plumbing
+- **[Hooks](docs/documentation/hooks.md)** — fire points, payloads, priority scale, built-ins, SLM hardening
+- **[Memory](docs/documentation/memory.md)** — `MemoryStore` / `SessionStore` / `Compactor` / `NotesFile`, bi-temporal facts
+- **[Multi-agent](docs/documentation/multiagent.md)** — Blackboard, Supervisor, Orchestrator, BackgroundAgent (OTP restart policies)
+- **[Interrupt & barge-in](docs/documentation/interrupt.md)** — `cancel_token` to llama-cpp `stopping_criteria`, AEC defaults, repeatable interrupts
+- **[Tool calling](docs/documentation/tool-calling.md)** — parser chain, GBNF grammar-constrained decoding, `tool_choice_policy`
 
-Architecture decisions:
-
-- **[ADR-001](docs/adr/001-cancel-token-plumbing.md)** — Cancel-token plumbing for barge-in
-- **[ADR-002](docs/adr/002-typed-ctx-hook-state.md)** — Typed `AgentContext` fields + hook-owned state
-- **[ADR-003](docs/adr/003-grammar-constrained-decoding.md)** — GBNF grammar-constrained tool decoding
-
-Full site: [EdgeVox Docs](https://edgevox-ai.github.io/edgevox/) (VitePress). Run locally:
+Full site: [EdgeVox Docs](https://edgevox.nrl.ai) (VitePress). Run locally:
 
 ```bash
 cd docs && npm run dev

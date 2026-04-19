@@ -547,7 +547,7 @@ New file `edgevox/integrations/sim/mujoco_humanoid.py` — `MujocoHumanoidEnviro
 - `edgevox/examples/agents/{home_assistant,robot_commander,dev_toolbox}.py` — distinct personas, migrate module globals to `ToyWorld`-backed `deps`
 - `edgevox/examples/agents/cli.py` — register `smart-home`, `robot-skills`, `robot-sim` subcommands
 - `pyproject.toml` — add `sim` optional dependency group: `sim = ["ir-sim>=2.9"]` and `sim-mujoco = ["mujoco>=3.2"]`
-- `docs/guide/agents.md` — new sections:
+- `docs/documentation/agents.md` — new sections:
   - "Tools vs Skills" (latency classes, cancellability)
   - "Multi-agent workflows" (Router, Sequential, handoff cost math)
   - "Safety for robots" (SafetyMonitor, stop-words, three-layer boundary)
@@ -665,7 +665,7 @@ The agent, workflow, persona, safety monitor, tests — all unchanged.
 10. **Robot sim live run (live Gemma)** — `edgevox-agent robot-sim`:
     - "Navigate to the kitchen" → matplotlib window shows the robot moving; skill feedback events fire; final reply "arrived".
     - Same prompt, type "stop" 1 s in → skill cancels, `safety_preempt` event, reply "Stopped.", measurably < full skill duration.
-11. **Latency smoke test** — record TTFT for leaf chitchat, router chitchat, router-to-tool, router-to-skill, router-to-irsim-skill on real Gemma. Document in `docs/guide/agents.md`.
+11. **Latency smoke test** — record TTFT for leaf chitchat, router chitchat, router-to-tool, router-to-skill, router-to-irsim-skill on real Gemma. Document in `docs/documentation/agents.md`.
 12. **TUI regression** — `edgevox-agent robot` still launches TUI, streams leaf replies, and now also surfaces skill feedback + safety preempts in the chat log.
 13. **Ruff + lint clean** across all new files.
 14. **Optional-dependency graceful degradation** — `edgevox-agent home --text-mode` works with neither `ir-sim` nor `rclpy` installed. The `sim.irsim` and `ros_skills` modules are import-guarded.
@@ -681,7 +681,7 @@ Suggested landing sequence so each phase is independently mergeable and testable
 5. **Phase 5: Workflows** — `Sequence`, `Fallback`, `Loop`, `Retry`, `Timeout` (drops `Parallel`). Unit tests.
 6. **Phase 6: IR-SIM adapter** — `IrSimEnvironment`, bundled YAML world, `robot_irsim_demo` example, `edgevox-agent robot-sim` subcommand, optional dependency group.
 7. **Phase 7: ROS2 action adapter stub** — `RosActionSkill` import-guarded helper. Not wired into examples yet; exists for users.
-8. **Phase 8: Docs** — update `docs/guide/agents.md` with the five new sections. Cross-link from the new plan doc.
+8. **Phase 8: Docs** — update `docs/documentation/agents.md` with the five new sections. Cross-link from the new plan doc.
 9. **Phase 9: MuJoCo tabletop arm (v1.1)** — `MujocoArmEnvironment`, bundled `tabletop_arm.xml`, `robot_panda` example, `edgevox-agent robot-panda` subcommand, `sim-mujoco` optional dep group. Headless integration tests guarded by `pytest.importorskip("mujoco")`.
 10. **Phase 10: MuJoCo humanoid locomotion (v1.2)** — `MujocoHumanoidEnvironment` (Unitree G1 / H1 from Menagerie), `robot_humanoid` example, procedural walking gait with an ONNX policy slot via `set_walking_policy`. *Shipped.*
 11. **Phase 11: ROS2 horizontal stack (v1.2)** — voice-pipeline bridge (`ROS2Bridge`), Nav2/TF2/sensor adapter (`RobotROS2Adapter`), ExecuteSkill action server (`ros2_actions.py` + `edgevox_msgs` colcon package), external-ROS2 sim (`ExternalROS2Environment`), `edgevox-agent robot-external` subcommand. *Shipped.*

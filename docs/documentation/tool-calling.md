@@ -97,7 +97,7 @@ agent = LLMAgent(
 )
 ```
 
-`llguidance` (merged into llama.cpp upstream Feb 2025) is picked up automatically when llama.cpp was built with `-DLLAMA_LLGUIDANCE=ON` — same API surface, ~10× faster grammar masking. See [ADR-003](../adr/003-grammar-constrained-decoding.md).
+`llguidance` (merged into llama.cpp upstream Feb 2025) is picked up automatically when llama.cpp was built with `-DLLAMA_LLGUIDANCE=ON` — same API surface, ~10× faster grammar masking.
 
 ## Testing
 
@@ -109,5 +109,4 @@ agent = LLMAgent(
 ## See also
 
 - [`agent-loop.md`](./agent-loop.md) — where the parser chain slots into `_drive`.
-- [ADR-003](../adr/003-grammar-constrained-decoding.md) — planned grammar path.
 - [SGLang function_call](https://docs.sglang.io/advanced_features/tool_parser.html) — upstream source for vendored detectors.

@@ -45,7 +45,7 @@ Agent code is sim-agnostic: the same Python works on `ToyWorld` (stdlib), `IrSim
 
 ## Shipping a desktop app
 
-EdgeVox is not just a library — [**RookApp**](/guide/desktop) is a reference PySide6 desktop application built on the same `LLMAgent` you use for robots. One Python process hosts the Qt UI, llama-cpp, and a Stockfish subprocess. No browser, no web server, no Node toolchain, no Tauri.
+EdgeVox is not just a library — [**RookApp**](/documentation/desktop) is a reference PySide6 desktop application built on the same `LLMAgent` you use for robots. One Python process hosts the Qt UI, llama-cpp, and a Stockfish subprocess. No browser, no web server, no Node toolchain, no Tauri.
 
 ![RookApp — PySide6 desktop chess robot](/rook_app.png)
 
@@ -53,25 +53,25 @@ EdgeVox is not just a library — [**RookApp**](/guide/desktop) is a reference P
 
 **Getting started**
 
-- [Quick start](/guide/quickstart) — install and run in 5 minutes
-- [Architecture](/guide/architecture) — deep dive into the streaming pipeline
-- [Component Design](/guide/components) — per-module design with mermaid diagrams
+- [Quick start](/documentation/quickstart) — install and run in 5 minutes
+- [Architecture](/documentation/architecture) — deep dive into the streaming pipeline
+- [Component Design](/documentation/components) — per-module design with mermaid diagrams
 
 **Features**
 
-- [Languages](/guide/languages) — all 16 supported languages and backends
-- [Voice pipeline](/guide/pipeline) — agent path vs legacy streaming path
-- [Agents & tools](/guide/agents) — full agent framework reference
-- [TUI commands](/guide/commands) — slash commands, voice switching, debugging
-- [ROS2 integration](/guide/ros2) — topics, services, action servers
-- [Chess partner](/guide/chess) — voice-controlled chess with pluggable engines
-- [RookApp (desktop)](/guide/desktop) — shipping EdgeVox as a native PySide6 app
+- [Languages](/documentation/languages) — all 16 supported languages and backends
+- [Voice pipeline](/documentation/pipeline) — agent path vs legacy streaming path
+- [Agents & tools](/documentation/agents) — full agent framework reference
+- [TUI commands](/documentation/commands) — slash commands, voice switching, debugging
+- [ROS2 integration](/documentation/ros2) — topics, services, action servers
+- [Chess partner](/documentation/chess) — voice-controlled chess with pluggable engines
+- [RookApp (desktop)](/documentation/desktop) — shipping EdgeVox as a native PySide6 app
 
 **Harness architecture**
 
-- [Agent loop](/guide/agent-loop) — six fire-points, parallel dispatch, handoff short-circuit
-- [Hooks](/guide/hooks) — authoring contract, built-ins, ordering rules
-- [Memory](/guide/memory) — `MemoryStore`, `SessionStore`, `NotesFile`, `Compactor`
-- [Multi-agent](/guide/multiagent) — `Blackboard`, `BackgroundAgent`, `AgentPool`
-- [Interrupt & barge-in](/guide/interrupt) — cancel-token plumbing (ADR-001)
-- [Tool calling](/guide/tool-calling) — parser chain + GBNF grammar roadmap
+- [Agent loop](/documentation/agent-loop) — six fire-points, parallel dispatch, handoff short-circuit
+- [Hooks](/documentation/hooks) — authoring contract, built-ins, ordering rules
+- [Memory](/documentation/memory) — `MemoryStore`, `SessionStore`, `NotesFile`, `Compactor`
+- [Multi-agent](/documentation/multiagent) — `Blackboard`, `BackgroundAgent`, `AgentPool`
+- [Interrupt & barge-in](/documentation/interrupt) — cancel-token plumbing
+- [Tool calling](/documentation/tool-calling) — parser chain + GBNF grammar roadmap
