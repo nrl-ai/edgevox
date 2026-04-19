@@ -162,6 +162,59 @@ class TestOTLPHTTPCollector:
         names = {s.name for s in in_memory.get_finished_spans()}
         assert "live-otlp" in names
 
+    def test_async_dispatch_does_not_block_slow_exporter(self, otel_collector):
+        """Prove the async-dispatch mode isolates the publisher from a
+        slow exporter: we install a fake exporter that sleeps for 200 ms
+        per span, run a turn, and assert the agent returned in well
+        under that time. Without async dispatch the turn would block."""
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+
+        from edgevox.agents import AgentContext, LLMAgent, TracingHook
+        from edgevox.agents.tracing_otel import install_otel_bridge, shutdown_async_dispatch
+
+        from .conftest import ScriptedLLM, reply
+
+        class _SlowExporter(SpanExporter):
+            def __init__(self):
+                self.exported: list = []
+
+            def export(self, spans):
+                time.sleep(0.2)
+                self.exported.extend(spans)
+                return SpanExportResult.SUCCESS
+
+            def shutdown(self): ...
+
+        slow = _SlowExporter()
+        provider = otel_collector["provider"]
+        provider.add_span_processor(SimpleSpanProcessor(slow))
+
+        from edgevox.agents.bus import EventBus
+
+        bus = EventBus()
+        install_otel_bridge(bus, service_name="edgevox-test", async_dispatch=True)
+
+        agent = LLMAgent(
+            name="async-bridge",
+            description="async dispatch test",
+            instructions=".",
+            tools=[],
+            hooks=[TracingHook(service_name="edgevox-test")],
+        )
+        agent.bind_llm(ScriptedLLM([reply("ok")]))
+
+        t0 = time.monotonic()
+        agent.run("go", AgentContext(bus=bus))
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 0.1, f"async dispatch should not block the agent turn; took {elapsed:.3f} s"
+        # Drain the worker so we know the slow exporter got the span
+        # even though the agent didn't wait for it.
+        shutdown_async_dispatch(bus, timeout=3.0)
+        provider.force_flush(5_000)
+        # The slow exporter received our span in the background.
+        assert any(s.name == "async-bridge" for s in slow.exported)
+
     def test_handoff_produces_parent_child_spans_on_wire(self, otel_collector):
         """Verify the parent-child relationship survives serialisation
         all the way to the HTTP collector."""
