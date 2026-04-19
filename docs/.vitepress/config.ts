@@ -83,6 +83,12 @@ export default withMermaid(
             ],
           },
           {
+            text: "Operations",
+            items: [
+              { text: "Monitoring & Logging", link: "/documentation/monitoring" },
+            ],
+          },
+          {
             text: "Reports",
             collapsed: false,
             items: [
