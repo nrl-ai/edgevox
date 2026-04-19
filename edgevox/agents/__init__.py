@@ -28,6 +28,7 @@ First-class Agent abstractions layered on top of the existing tool system:
   `AgentPool`, agent-to-agent messaging.
 """
 
+from edgevox.agents.agent_tools import agent_as_tool
 from edgevox.agents.artifacts import (
     Artifact,
     ArtifactStore,
@@ -217,6 +218,7 @@ __all__ = [
     "Trigger",
     "VectorMemoryStore",
     "WebRTCVADWatcher",
+    "agent_as_tool",
     "bytes_artifact",
     "console_approver",
     "debounce_trigger",

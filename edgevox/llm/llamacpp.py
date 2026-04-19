@@ -592,6 +592,7 @@ class LLM:
         stream: bool = False,
         stop_event: threading.Event | None = None,
         grammar: Any = None,
+        seed: int | None = None,
     ) -> Any:
         """Thread-safe completion entry point for the agent framework.
 
@@ -629,6 +630,11 @@ class LLM:
             kwargs["stopping_criteria"] = _make_stopping_criteria(stop_event)
         if grammar is not None:
             kwargs["grammar"] = grammar
+        if seed is not None:
+            # llama-cpp-python forwards ``seed`` to the sampler, making
+            # identical (messages, tools, seed) triples produce identical
+            # outputs — the whole point of deterministic mode.
+            kwargs["seed"] = seed
         with self._inference_lock:
             return self._llm.create_chat_completion(**kwargs)
 

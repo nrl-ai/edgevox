@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -160,10 +161,24 @@ class AgentContext:
     # across hook instances. Replaces the previous ``ctx.session.state["__xxx__"]``
     # shared keys used by :mod:`edgevox.llm.hooks_slm`.
     hook_state: dict[int, dict[str, Any]] = field(default_factory=dict)
+    # Deterministic-mode seed. Set once per-context (or forwarded through
+    # handoffs) to make a run reproducible: the LLM gets ``seed=``, hooks
+    # that need randomness draw from ``ctx.rng``, and any other stochastic
+    # subsystem can read ``ctx.seed`` directly. ``None`` (default) keeps
+    # today's behaviour — each call uses the LLM's default sampler seed
+    # and ``ctx.rng`` is a fresh ``random.Random()``.
+    seed: int | None = None
+    # Populated lazily from ``seed`` by ``__post_init__``; always usable,
+    # even when ``seed is None`` (then it's an unseeded generator). Using
+    # ``ctx.rng`` instead of ``random.random()`` is what actually gives
+    # reproducibility — global ``random`` is shared across everything.
+    rng: random.Random = field(default_factory=random.Random)
 
     def __post_init__(self) -> None:
         if self.on_event is not None:
             self.bus.subscribe_all(self.on_event)
+        if self.seed is not None:
+            self.rng.seed(self.seed)
 
     def emit(self, kind: str, agent_name: str, payload: Any = None) -> None:
         """Publish an :class:`AgentEvent` to the bus."""
@@ -537,6 +552,10 @@ class LLMAgent:
                 memory=ctx.memory,
                 interrupt=ctx.interrupt,
                 artifacts=ctx.artifacts,
+                # Determinism rides through handoffs — same seed on the
+                # sub-agent means the whole multi-agent run is
+                # reproducible end-to-end, not just the first leg.
+                seed=ctx.seed,
             )
             # ``tool_registry``/``llm`` on the subagent ctx are installed
             # by the target's own ``run()`` — don't pre-seed from the
@@ -660,18 +679,26 @@ class LLMAgent:
             # Pick a tool-choice + grammar combination per the policy.
             # ``auto`` is the historical default (no constraint).
             tool_choice, grammar = self._tool_choice_for_hop(hop, tool_schemas)
+            # Deterministic-mode plumbing: ``ctx.seed`` (when set) pins
+            # the LLM sampler so a run is reproducible end-to-end. Older
+            # shims that don't accept ``seed`` are handled by the
+            # TypeError fallback below.
+            complete_kwargs: dict[str, Any] = {
+                "messages": messages,
+                "tools": tool_schemas,
+                "tool_choice": tool_choice,
+                "stream": False,
+                "stop_event": cancel_token,
+                "grammar": grammar,
+            }
+            if ctx.seed is not None:
+                complete_kwargs["seed"] = ctx.seed
             try:
-                result = llm.complete(
-                    messages,
-                    tools=tool_schemas,
-                    tool_choice=tool_choice,
-                    stream=False,
-                    stop_event=cancel_token,
-                    grammar=grammar,
-                )
+                result = llm.complete(**complete_kwargs)
             except TypeError:
                 # Back-compat for LLM shims (tests) that predate
-                # ``stop_event`` / ``grammar``. Drop the new kwargs.
+                # ``stop_event`` / ``grammar`` / ``seed``. Drop the new
+                # kwargs and retry with the minimal surface.
                 result = llm.complete(
                     messages,
                     tools=tool_schemas,
@@ -1003,6 +1030,7 @@ class LLMAgent:
             memory=parent_ctx.memory,
             interrupt=parent_ctx.interrupt,
             artifacts=parent_ctx.artifacts,
+            seed=parent_ctx.seed,
         )
         return sub.run(task, sub_ctx)
 

@@ -294,6 +294,20 @@ class ToolRegistry:
         if tool_obj is None:
             return ToolCallResult(name=name, arguments=decoded, error=f"unknown tool: {name!r}")
 
+        # Validate arguments against the tool's declared JSON schema
+        # before dispatch. Catches malformed LLM output (missing
+        # required fields, wrong types, out-of-range enums) at the
+        # boundary rather than deep inside user code. Structured
+        # validation errors get fed back to the LLM as tool-call
+        # errors, so the model can retry with corrected arguments.
+        validation_error = _validate_against_schema(decoded, tool_obj.parameters)
+        if validation_error is not None:
+            # Keep the ``bad arguments:`` prefix so downstream matchers
+            # like ``SchemaRetryHook`` (edgevox.llm._agent_harness.LOOP_BREAK_SIGNALS)
+            # still fire on validation failures and synthesise a schema
+            # hint back to the model.
+            return ToolCallResult(name=name, arguments=decoded, error=f"bad arguments: {validation_error}")
+
         call_kwargs = dict(decoded)
         if ctx is not None:
             try:
@@ -311,6 +325,65 @@ class ToolRegistry:
             log.exception("Tool %r raised", name)
             return ToolCallResult(name=name, arguments=decoded, error=f"{type(e).__name__}: {e}")
         return ToolCallResult(name=name, arguments=decoded, result=result)
+
+
+# Minimum JSON-schema subset needed to validate ``@tool`` argument
+# dicts. Implements required-field + type checks + enum checks only —
+# the subset that actually catches LLM mistakes. We deliberately don't
+# pull in ``jsonschema`` as a dependency; the generated schemas are
+# well-constrained (``type: object`` + flat properties) and a tight
+# implementation here is both faster and removes a runtime dep.
+_JSON_TYPE_PY = {
+    "string": str,
+    "integer": int,
+    "number": (int, float),
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+    "null": type(None),
+}
+
+
+def _validate_against_schema(args: dict[str, Any], schema: dict[str, Any]) -> str | None:
+    """Return ``None`` if ``args`` conforms, otherwise a human-readable
+    error describing the first violation encountered. Only validates
+    the JSON-schema subset produced by :func:`tool`."""
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        # Unrecognised / custom schemas are passed through unchecked —
+        # callers authoring their own ``Tool(parameters=...)`` take
+        # responsibility for validation in the tool body.
+        return None
+
+    props = schema.get("properties") or {}
+    required = schema.get("required") or []
+
+    for key in required:
+        if key not in args:
+            return f"missing required field {key!r}"
+
+    for key, value in args.items():
+        spec = props.get(key)
+        if spec is None:
+            # Unknown property — tolerate by default (matches OpenAI
+            # tool-call semantics; strict mode would use
+            # ``additionalProperties: false`` and reject here).
+            continue
+        expected_type = spec.get("type")
+        if expected_type is not None:
+            py_type = _JSON_TYPE_PY.get(expected_type)
+            if py_type is not None and not isinstance(value, py_type):
+                # Pydantic-style leniency: ``int`` is OK where ``number``
+                # is expected (``_JSON_TYPE_PY`` maps ``number`` to the
+                # tuple already), and ``True`` counts as ``1`` for
+                # ``integer`` only when the caller explicitly allowed
+                # booleans — but boolean-as-int is a common LLM mistake
+                # worth flagging.
+                got = type(value).__name__
+                return f"field {key!r}: expected {expected_type}, got {got}"
+        enum = spec.get("enum")
+        if enum is not None and value not in enum:
+            return f"field {key!r}: value {value!r} not in allowed enum {enum}"
+    return None
 
 
 def load_entry_point_tools(group: str = "edgevox.tools") -> list[Tool]:
