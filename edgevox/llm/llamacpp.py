@@ -68,16 +68,29 @@ def _strip_thinking(content: str) -> str:
 def _payload_to_call(payload: dict, idx: int, prefix: str) -> dict | None:
     """Turn a decoded JSON payload into an OpenAI-shaped tool-call dict.
 
-    Accepts both common shapes:
+    Accepts the common shapes SLMs actually emit:
       - ``{"name": "<fn>", "arguments": {...}}`` (Qwen, chatml, OpenAI)
-      - ``{"function": "<fn>", "parameters": {...}}`` (Llama 3.x native)
+      - ``{"function": "<fn>", "parameters": {...}}`` (Llama 3.x native, flat form)
+      - ``{"function": {"name": "<fn>", "arguments": {...}}}`` — single OpenAI
+        tool-call object, as emitted by Llama-3.2-1B when it writes the inner
+        object without the outer ``tool_calls`` wrapper.
     """
-    name = payload.get("name") or payload.get("function")
-    if not name:
+    # Nested OpenAI-object form: unwrap the inner ``function`` dict first so
+    # downstream code sees a consistent shape instead of a dict-valued "name".
+    fn_value = payload.get("function")
+    if isinstance(fn_value, dict):
+        inner = fn_value
+        name = inner.get("name")
+        args = inner.get("arguments")
+        if args is None:
+            args = inner.get("parameters", {})
+    else:
+        name = payload.get("name") or fn_value
+        args = payload.get("arguments")
+        if args is None:
+            args = payload.get("parameters", {})
+    if not isinstance(name, str) or not name:
         return None
-    args = payload.get("arguments")
-    if args is None:
-        args = payload.get("parameters", {})
     return {
         "id": f"{prefix}_{idx}",
         "function": {

@@ -78,7 +78,7 @@ chess_robot server flow doesn't require renaming anything:
 
 | Role | Default | Notes |
 |---|---|---|
-| LLM | `qwen3-1.7b` (preset slug) | `MoveInterceptHook` handles chess tools deterministically, so the LLM only has to talk naturally. Qwen3 1.7B is the default (Apache-2.0, ~1.1 GB). Users can switch to `llama-3.2-1b` (~0.8 GB, casual voice) or `gemma-4-e2b` (~1.8 GB, strongest at structured briefings) from the **Chat model** row in the Settings dialog. |
+| LLM | `gemma-4-e2b` (preset slug) | `MoveInterceptHook` handles chess tools deterministically, so the LLM only has to talk naturally. Gemma 4 E2B is the default (~1.8 GB at Q4_K_M) — picked by the chess-commentary benchmark as the best quality/speed point. Users can switch from the **Chat model** row in the Settings dialog to `qwen3-1.7b` (~1.1 GB, Apache-2.0 alternative), `llama-3.2-3b` (~2.0 GB, larger alt), `llama-3.2-1b` (~0.8 GB, fastest), or `qwen2.5-1.5b` (~1.0 GB, Apache-2.0 tiny). |
 | STT | Whisper (lazy) | Loaded on first mic click — text-only users never pay the cost. |
 | TTS | Kokoro (lazy) | Loaded on first reply; muted → not loaded at all. |
 
@@ -100,7 +100,7 @@ Keyboard shortcut: **Ctrl+N** / **Cmd+N** for new game.
 | Field | Options | Applies |
 |---|---|---|
 | Persona | `casual`, `grandmaster`, `trash_talker` | **live** — swaps agent instructions, face hook, accent colour. Engine strength waits for next *new game* so the in-progress board isn't clobbered. |
-| Chat model | `qwen3-1.7b` (default) · `llama-3.2-1b` · `gemma-4-e2b` | next launch — swapping the GGUF requires a fresh llama-cpp load. |
+| Chat model | ⭐⭐⭐ `gemma-4-e2b` (default) · ⭐⭐ `qwen3-1.7b` · ⭐⭐ `llama-3.2-3b` · ⭐ `llama-3.2-1b` · ⭐ `qwen2.5-1.5b` | next launch — swapping the GGUF requires a fresh llama-cpp load. Star ratings match the chess-commentary benchmark scoreboard. |
 | Piece set | Fantasy (default) · Celtic · Spatial | live |
 | Board theme | Wood · Green · Blue · Gray · Dark wood · Night | live |
 | Enable voice input | on / off | next launch |
@@ -145,7 +145,7 @@ flowchart LR
     UI["RookWindow (PySide6)<br/>board · face · chat · title bar"]
     Bridge["RookBridge<br/>QThreadPool workers"]
     Agent["LLMAgent + hooks<br/>(MoveIntercept, RichAnalytics, Face,<br/>MemoryInject, Notes, Compaction, …)"]
-    LLM["llama.cpp<br/>Llama-3.2-1B Q4_K_M"]
+    LLM["llama.cpp<br/>Gemma 4 E2B Q4_K_M"]
     Env["ChessEnvironment<br/>(ctx.deps)"]
     Fish["Stockfish / Maia<br/>(UCI subprocess)"]
     Voice["VoiceWorker<br/>(Whisper + silero VAD)"]
@@ -191,8 +191,8 @@ playback already pauses the mic queue at the source — no double-gating.
   grounded `commentary_directive` for the briefing when it does. See
   [Commentary quality](#commentary-quality--evaluation) below.
 - `RichChessAnalyticsHook` — hidden system-role briefing. Renders
-  either the focused `YOUR ROLE + GROUND TRUTH + MOOD CUE` shape
-  (when the gate set a directive) or the legacy rich card (fallback).
+  either the slim `FACTS + SITUATION` shape (when the gate set a
+  directive) or the legacy rich card (fallback).
 - `RobotFaceHook` — emits `robot_face` events → translated to the
   `face_changed` Qt signal
 - `MoveCommentaryHook` — captures the latest move outcome
@@ -242,45 +242,35 @@ at 90 applies the user's move + engine reply). It inspects:
 Silent turns `HookResult.end("")` the run *before the LLM even loads a
 message* — zero inference cost, zero fabrication risk.
 
-### 2. Build a GROUND TRUTH block
+### 2. Build a FACTS + SITUATION block
 
-When Rook speaks, the gate assembles a focused directive instead of
-letting the model read the FEN-heavy legacy briefing. Structure:
+When Rook speaks, the gate assembles a slim, declarative directive.
+Structure after the prompt-ablation sweep consolidated redundant
+sections (see [chess-commentary-benchmark §7.1](/documentation/reports/chess-commentary-benchmark#_7-1-prompt-ablation-slim-briefing-refactor)):
+
 
 ```text
 [CHESS BRIEFING — internal context, do not read aloud verbatim]
-YOUR ROLE: You are Rook, playing the BLACK pieces. The human opponent
-plays WHITE. When the directive says "you"/"your" it means YOU (Rook,
-black); "the user" means the human (white). Never confuse the two.
-
-GROUND TRUTH — this is the moment you're reacting to. Use it as your
-launchpad, then react in character with attitude that matches the
-situation: confident if the score says you're winning, rattled if
-it says the user is winning, curious when things get sharp.
-- The user played: bishop from f1 to a6 (Ba6)
-- You (Rook) played: knight from b8 to a6, capturing a bishop (Nxa6)
-- Material change this turn: YOU gained 3 points of material (the
-  user came out worse). React accordingly — this is a good turn.
-- Engine evaluation (from your side): +3.50 pawns — you have a clear
-  advantage
-
-MOOD CUE: you have a clear edge — sound pleased with your position.
-
-MOVE HISTORY (last turns, eval from your side in pawns — negative
-means the user is ahead):
-- turn 1: user pawn e2→e4, you pawn e7→e5 · eval +0.00
-- turn 2: user bishop f1→a6, you knight b8→a6 capturing bishop ·
-  eval +3.50 · swung +3.50 · last move: best
-
-Stay grounded: only claim tactics listed above, never invent pins /
-forks / attacks on pieces you can't see. If nothing specific comes
-to mind in persona, reply exactly `<silent>`.
+FACTS — just happened: The user's move: bishop from f1 to a6 (Ba6).
+My move (Rook): knight from b8 to a6, capturing a bishop (Nxa6).
+Material change this turn: YOU gained 3 points of material (the user
+came out worse in the exchange). React accordingly — this is a good
+turn for you. Engine evaluation (from your side): +3.50 pawns — you
+are winning decisively.
+SITUATION: Rook gained material this turn (+3 points). Tone:
+confident; do not praise the user's move.
 [END BRIEFING]
 ```
 
 Every claim is derived from verified env state. The model can only
 *narrate* facts that are already in the block; it can't invent a
 pin because there's no pin line to invent from.
+
+Pronoun discipline, "no markdown / no SAN", the `<silent>` fallback,
+and the opening-turn greeting cue all live once in the system-prompt
+preamble (`edgevox.examples.agents.chess_robot.prompts.ROOK_TOOL_GUIDANCE`) —
+repeating them in the per-turn briefing added ~130 tokens per turn
+without improving quality on Gemma 4 E2B or Llama 3.2 1B.
 
 ### 3. Emit a chat-visible analytics bubble
 
@@ -317,8 +307,8 @@ plausible given the code shape:
 | `TestScenarioCheckmate` | Game-over branch owns terminal turns. |
 | `TestScenarioCaptureDescriptions` | Directive names real moving + captured pieces via pre-move board replay. |
 | `TestScenarioClassificationAttribution` | `"that last move by you"` vs `"by the user"` matches actual parity. |
-| `TestScenarioBlunderHungBishop` | Material-change line + mood cue present (regression for "bold move, you're gaining the initiative" on a losing position). |
-| `TestScenarioRoleHeader` | Every mid-game directive leads with the explicit side / role header. |
+| `TestScenarioBlunderHungBishop` | Material-change line + SITUATION confidence cue present (regression for "bold move, you're gaining the initiative" on a losing position). |
+| `TestScenarioDirectiveShape` | Directive leads with `FACTS` and omits the deprecated `YOUR ROLE` / `<silent>` footer (kept in `ROOK_TOOL_GUIDANCE` instead). |
 | `TestScenarioIdempotentOnRepeatState` | Non-move user input (e.g. "what's the score?") doesn't re-emit analytics or re-inject stale directives. |
 
 ### Improvement log
@@ -332,8 +322,13 @@ Historical fixes the harness now guards against:
   marker but kept the closing one.
 - **Comment every move** — dialled back by adding
   `CommentaryGateHook`'s noteworthy-signal filter.
-- **Hallucinated tactics** — replaced FEN/PV-heavy briefing with the
-  focused `YOUR ROLE + GROUND TRUTH + MOOD CUE` shape.
+- **Hallucinated tactics** — replaced FEN/PV-heavy briefing with a
+  focused shape that names every allowed claim. A later
+  prompt-ablation sweep (`scripts/bench_prompt_ablation.py`) found
+  the `YOUR ROLE` and anti-fabrication footer were duplicating rules
+  already in `ROOK_TOOL_GUIDANCE`; the briefing was slimmed to
+  `FACTS + SITUATION`, saving ~130 tokens per turn at equal or
+  better heuristic quality on Gemma 4 E2B and Llama 3.2 1B.
 - **Eval sign flip in chat bubble** — split `_score_line` into two
   perspective-aware variants.
 - **Loading panel never hides** — migrated the board-area stack from
@@ -356,7 +351,7 @@ Historical fixes the harness now guards against:
 ### Chess commentary benchmark
 
 The [chess commentary benchmark](/documentation/reports/chess-commentary-benchmark)
-compares 25 LLMs across 36 scenarios (openings / midgame / endgame /
+compares 25 LLMs across 35 scenarios (openings / midgame / endgame /
 terminal / color flips) and informs the default model choice +
 Settings picker ranking. Heuristic quality score alone is misleading —
 several models score 99-100 on the grader but fail semantic audit
@@ -368,6 +363,7 @@ Re-run after any gate or prompt change to catch regressions:
 ```bash
 python scripts/bench_chess_commentary.py                 # full 25-model sweep
 python scripts/eval_llm_commentary.py --model gemma-4-e2b  # iterate on one model
+python scripts/bench_prompt_ablation.py --model gemma-4-e2b  # per-briefing-section ablation
 python scripts/analyze_bench_results.py                   # quality × speed Pareto
 ```
 

@@ -323,10 +323,21 @@ def _args_close(expected: dict[str, Any], actual: dict[str, Any], tol: dict[str,
                 flags.append(f"arg {k}: expected {want!r}, got {got!r}")
                 all_ok = False
             continue
-        if isinstance(want, (int, float)) and isinstance(got, (int, float)):
+        if isinstance(want, (int, float)):
+            # Coerce string-encoded numbers ("3.5", "90") before comparing —
+            # Llama-3.x-1B and a few smaller models return all args as
+            # strings regardless of the schema's declared ``number`` type.
+            try:
+                got_num = float(got) if not isinstance(got, bool) else None
+            except (TypeError, ValueError):
+                got_num = None
+            if got_num is None:
+                flags.append(f"arg {k}: expected {want}, got {got!r} (non-numeric)")
+                all_ok = False
+                continue
             delta = tol.get(k, 1e-9)
-            if abs(float(got) - float(want)) > delta:
-                flags.append(f"arg {k}: expected {want}, got {got}")
+            if abs(got_num - float(want)) > delta:
+                flags.append(f"arg {k}: expected {want}, got {got_num}")
                 all_ok = False
             continue
         if str(got).strip().lower() != str(want).strip().lower():

@@ -162,7 +162,7 @@ class Settings:
             input_device=_device(q.value("input_device", None)),
             output_device=_device(q.value("output_device", None)),
             debug_mode=_bool(q.value("debug_mode", False)),
-            llm_model=_llm_slug(q.value("llm_model", "llama-3.2-1b")),
+            llm_model=_llm_slug(q.value("llm_model", "gemma-4-e2b")),
             user_side=_side_slug(q.value("user_side", "white")),
         )
 

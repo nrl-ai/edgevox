@@ -272,6 +272,8 @@ def _build_ground_truth(
     state: ChessState,
     env: ChessEnvironment,
     session_state: dict[str, Any],
+    *,
+    ablate: frozenset[str] | set[str] | None = None,
 ) -> str | None:
     """Return a short GROUND TRUTH block, or ``None`` to stay silent.
 
@@ -283,7 +285,17 @@ def _build_ground_truth(
     ``greeted`` flag — whether Rook has already greeted the user for
     the current game. ``clear_memory`` wipes the session, so a new
     game starts ungreeted even within the same app process.
+
+    ``ablate`` is a harness-only knob for the prompt-ablation bench
+    (``scripts/bench_prompt_ablation.py``). Pass a set of component
+    IDs — ``{"move_desc", "classification", "material", "score",
+    "situation"}`` — to suppress those sections from the returned
+    directive. ``role_header`` and ``footer`` were dropped
+    unconditionally after the ablation sweep found them redundant
+    with ``ROOK_TOOL_GUIDANCE``; those keys are accepted for
+    backward compat but have no effect.
     """
+    ablate = frozenset(ablate or ())
     # Game-over is handled in the gate's ``__call__`` via canned
     # persona lines (``HookResult.end``) — by the time we reach this
     # builder the run is alive and the LLM is going to be asked to
@@ -348,43 +360,42 @@ def _build_ground_truth(
         return None
 
     facts: list[str] = []
-    if user_desc:
+    if user_desc and "move_desc" not in ablate:
         facts.append(f"The user's move: {user_desc}")
-    if engine_desc:
+    if engine_desc and "move_desc" not in ablate:
         facts.append(f"My move (Rook): {engine_desc}")
-    if has_notable_classification:
+    if has_notable_classification and "classification" not in ablate:
         mover = "my" if (engine_san and engine_san == state.last_move_san) else "the user's"
         facts.append(
             f"Classification: that {mover} last move was a {cls.value} — "
             f"the engine thinks there was a clearly better choice."
         )
-    material_line = _material_change_line(state.san_history, env)
-    if material_line:
-        facts.append(material_line)
-    score_line = _score_line(state, env)
-    if score_line:
-        facts.append(score_line)
+    if "material" not in ablate:
+        material_line = _material_change_line(state.san_history, env)
+        if material_line:
+            facts.append(material_line)
+    if "score" not in ablate:
+        score_line = _score_line(state, env)
+        if score_line:
+            facts.append(score_line)
 
-    role_header = _role_header(env)
-    # Minimalist directive shape for small (1-2B) models. Empirically,
-    # giving 1B a structured multi-section block (role header +
-    # ground-truth bullets + mood cue + history + situation line +
-    # anti-fabrication footer) causes the model to ignore everything
-    # and fabricate generic chess chatter. Keep it brutally short:
-    # one line of role, one line of facts, one line of tone, done.
-    situation = _situation_summary(state, env, user_san, engine_san)
-    facts_line = ". ".join(facts)
-    sections = [
-        role_header,
-        f"FACTS — just happened, exactly what I react to: {facts_line}.",
-    ]
-    if situation:
-        sections.append(f"MY REACTION TONE: {situation}")
-    sections.append(
-        "One short sentence in persona. No markdown. No quoting SAN. "
-        "No inventing pieces or squares beyond the FACTS above. "
-        "If I honestly have nothing to say, I reply exactly `<silent>`."
-    )
+    # Minimalist directive shape. Prior versions prepended a role
+    # header (pronoun discipline) and appended an anti-fabrication
+    # footer, but both duplicated rules already spelled out in
+    # ``ROOK_TOOL_GUIDANCE`` — the prompt-ablation sweep
+    # (``scripts/bench_prompt_ablation.py``) measured no quality
+    # change on Gemma 4 E2B or Llama 3.2 1B when dropped, and saved
+    # ~130 tokens per turn. Section header is ``SITUATION`` (third-
+    # person, declarative) rather than ``MY REACTION TONE`` (first-
+    # person, narrative) — 1B models will paste first-person
+    # instructions verbatim into their reply if we give them that
+    # shape.
+    facts_line = ". ".join(facts) if facts else "(no extra facts)"
+    sections: list[str] = [f"FACTS — just happened: {facts_line}."]
+    if "situation" not in ablate:
+        situation = _situation_summary(state, env, user_san, engine_san)
+        if situation:
+            sections.append(f"SITUATION: {situation}")
     return "\n".join(sections)
 
 
@@ -414,50 +425,37 @@ def _situation_summary(
         raw = _material_balance(post) - _material_balance(pre)
         delta_rook = raw if env.engine_plays == "white" else -raw
 
+    # Phrasing rule: describe the situation as neutral state, NOT as
+    # first-person narrative instructions. 1B models will paste phrases
+    # like "I concede in persona" or "I react with confidence" verbatim
+    # into the reply if the briefing narrates in first person. Keep
+    # this section declarative — "situation is X, tone should be Y" —
+    # so there's nothing quotable to leak.
     check_flag = ""
     if user_san and user_san.endswith("#"):
-        return "The user just checkmated me. I concede in persona. I never claim I'm still in the game."
+        return "User just delivered checkmate. Tone: resigned, gracious, or defiant in character. Do not suggest the game continues."
     if engine_san and engine_san.endswith("#"):
-        return "I just delivered checkmate. I celebrate in persona. I never claim my king is in trouble."
+        return (
+            "Rook just delivered checkmate. Tone: triumphant or sharply satisfied in character. Do not suggest danger."
+        )
     if engine_san and engine_san.endswith("+"):
-        check_flag = " I gave check."
+        check_flag = " Rook gave check."
     elif user_san and user_san.endswith("+"):
-        check_flag = " The user gave me check."
+        check_flag = " User gave check."
 
     if delta_rook >= 3:
-        return f"I won material this turn (+{delta_rook} points).{check_flag} I react with confidence, maybe a jab. I do NOT call the user's move solid or good."
+        return f"Rook gained material this turn (+{delta_rook} points).{check_flag} Tone: confident; do not praise the user's move."
     if delta_rook <= -3:
-        return f"I lost material this turn ({delta_rook} points).{check_flag} I react with frustration, a sigh, or a rueful line. I do NOT claim I'm winning."
+        return f"Rook lost material this turn ({delta_rook} points).{check_flag} Tone: rattled, rueful, or wry; do not claim an advantage."
     if delta_rook > 0:
-        return f"I came out slightly ahead in the exchange.{check_flag} I react briefly in persona — no pep talk at the user."
+        return f"Rook came out slightly ahead in the exchange.{check_flag} Tone: brief and in character."
     if delta_rook < 0:
-        return f"I came out slightly behind in the exchange.{check_flag} I react briefly in persona — no congratulating the user."
+        return f"Rook came out slightly behind in the exchange.{check_flag} Tone: brief and in character; no congratulating the user."
     if check_flag:
         return f"Even exchange this turn.{check_flag}"
     # No material change, no check — still called here because something
     # else (classification, opening turn) triggered speech. Keep it open.
     return None
-
-
-def _role_header(env: ChessEnvironment) -> str:
-    """Explicit side / role line the 1-2B model reads first.
-
-    Small instruction-tuned models flip pronouns constantly — they
-    read "you (Rook) played X" and write "you played X" back to the
-    user, pasting their own move onto the opponent. The fix is to
-    force strict first-person for Rook's own moves ("I played", "my
-    knight") and keep "you" exclusively for speaking AT the user.
-    """
-    me = env.engine_plays.upper()
-    them = env.user_plays.upper()
-    return (
-        f"YOUR ROLE: I am Rook, playing the {me} pieces. The human "
-        f"opponent plays {them}. When I talk about my own moves or "
-        f"pieces I say 'I', 'me', 'my' — never 'you' or 'your'. When "
-        f"I speak TO the user I say 'you', 'your move', 'your piece'. "
-        f"NEVER call my own piece 'your piece' or describe my own "
-        f"move as 'you're doing X'."
-    )
 
 
 def _material_change_line(san_history: list[str], env: ChessEnvironment) -> str | None:

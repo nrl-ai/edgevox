@@ -465,9 +465,9 @@ class TestScenarioBlunderHungBishop:
     initiative.' — congratulating the user for losing a piece.
 
     Two fixes the directive must now carry:
-      1. MATERIAL CHANGE line telling the model explicitly that Rook
-         gained material and the user lost the exchange.
-      2. MOOD CUE telling the model to sound confident (Rook is
+      1. MATERIAL CHANGE line in FACTS telling the model explicitly
+         that Rook gained material and the user lost the exchange.
+      2. SITUATION line telling the model to sound confident (Rook is
          winning), NOT to generically congratulate the user.
       3. No "bold" in the example reactions — the model was
          literally copy-pasting the example.
@@ -515,13 +515,16 @@ class TestScenarioBlunderHungBishop:
         assert "do not call" in d or "not praise" in d or "not congratulate" in d or "do not" in d
 
 
-class TestScenarioRoleHeader:
-    """Every mid-game directive must lead with an explicit role / side
-    header so the 1-2B model can't confuse ``you`` (= Rook) with
-    ``you`` (= user in the reader's head).
+class TestScenarioDirectiveShape:
+    """Directive body no longer includes a per-turn role header — the
+    prompt-ablation sweep showed the role_header content was fully
+    covered by ``ROOK_TOOL_GUIDANCE`` in the system prompt, and keeping
+    both cost ~90 tokens per turn without measurable quality benefit
+    on Gemma 4 E2B or Llama 3.2 1B. Pin the new shape so a future
+    change can't silently re-inflate the directive.
     """
 
-    def test_role_header_present(self):
+    def test_directive_shape(self):
         turns = [
             ScriptedTurn(san_history=["e4", "e5"], classification=MoveClassification.BEST),
             ScriptedTurn(
@@ -532,23 +535,16 @@ class TestScenarioRoleHeader:
         ]
         records = run_scenario(turns, user_plays="white")
         d = records[-1].directive or ""
-        assert "your role" in d.lower(), f"role header missing: {d}"
-        assert "i am rook" in d.lower()
-        # Role must name the correct side for this env (user=white → Rook=black).
-        assert "rook, playing the black pieces" in d.lower()
-
-    def test_role_header_flips_with_colour(self):
-        turns = [
-            ScriptedTurn(san_history=["d4", "d5"], classification=MoveClassification.BEST),
-            ScriptedTurn(
-                san_history=["d4", "d5", "Nf3", "Nf6", "Bxf6", "gxf6"],
-                eval_cp=-200,
-                classification=MoveClassification.MISTAKE,
-            ),
-        ]
-        records = run_scenario(turns, user_plays="black")
-        d = records[-1].directive or ""
-        assert "rook, playing the white pieces" in d.lower(), f"role header colour wrong: {d}"
+        low = d.lower()
+        # Should start with FACTS.
+        assert low.lstrip().startswith("facts"), f"directive should lead with FACTS: {d}"
+        # Must NOT contain the old role-header prose.
+        assert "your role" not in low
+        assert "i am rook" not in low
+        # Footer's "one short sentence" / "<silent>" language lives in
+        # ROOK_TOOL_GUIDANCE now, not in the per-turn directive.
+        assert "one short sentence" not in low
+        assert "<silent>" not in low
 
 
 class TestScenarioIdempotentOnRepeatState:

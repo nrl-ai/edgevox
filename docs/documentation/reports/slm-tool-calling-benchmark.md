@@ -153,7 +153,7 @@ This is a **detection-focused smoke test**, not a BFCL-grade benchmark. It answe
 
 ## 6 · Results
 
-Raw data: [`docs/reports/data/slm-tool-calling-final.json`](https://github.com/vietanhdev/edgevox/blob/main/docs/reports/data/slm-tool-calling-final.json) in the repository — full 18-preset run produced by `scripts/smoke_test_llm_presets.py` after the parser chain and SLM harness hardening landed.
+Raw data: regenerable locally with `uv run python scripts/smoke_test_llm_presets.py --json results.json`. A per-preset snapshot from the run that landed after the parser-chain + SLM-harness hardening is preserved below; future sweeps will update in place.
 
 ### 6.1 Final results (18 presets, RTX 3090, cached loads)
 
@@ -313,7 +313,7 @@ On a machine matching the environment in [§5](#_5-methodology) (RTX 3090-class 
 uv run python scripts/smoke_test_llm_presets.py --json results.json
 ```
 
-The script downloads every preset, runs the two-turn probe, and exits non-zero if any preset fails to load or chat. Compare `results.json` against [`docs/reports/data/slm-tool-calling-final.json`](https://github.com/vietanhdev/edgevox/blob/main/docs/reports/data/slm-tool-calling-final.json). A `yes` in the *tool called?* column means the parser chain recovered a call regardless of argument correctness — *correctness* is the next-milestone benchmark.
+The script downloads every preset, runs the two-turn probe, and exits non-zero if any preset fails to load or chat. Compare `results.json` against the tables in [§6](#_6-results) above. A `yes` in the *tool called?* column means the parser chain recovered a call regardless of argument correctness — *correctness* is what the [`robot-tool-calling-benchmark.md`](/documentation/reports/robot-tool-calling-benchmark) companion measures.
 
 ## 11 · Future work
 

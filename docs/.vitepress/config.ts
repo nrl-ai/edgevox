@@ -106,6 +106,10 @@ export default withMermaid(
                 text: "Chess commentary benchmark",
                 link: "/documentation/reports/chess-commentary-benchmark",
               },
+              {
+                text: "Robot tool-calling benchmark",
+                link: "/documentation/reports/robot-tool-calling-benchmark",
+              },
             ],
           },
         ],

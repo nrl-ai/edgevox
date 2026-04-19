@@ -189,10 +189,12 @@ class TestCommentaryGateHook:
         assert ctx.session.state["quiet_streak"] == 0
 
     def test_directive_forbids_invented_tactics_mid_game(self):
-        """Anti-fabrication guidance must stay in the directive — that's
-        the whole reason the gate exists. The wording was softened to
-        invite persona reactions, but the directive must still constrain
-        the model to claims that are listed in the facts block."""
+        """The directive must ground the model in concrete facts — that's
+        the whole point of the gate. After the prompt-ablation sweep
+        moved the anti-fabrication wording into ``ROOK_TOOL_GUIDANCE``
+        (so it appears once in the system prompt, not twice per turn),
+        the directive body leads with a FACTS block that enumerates the
+        exact claims the model is allowed to narrate."""
         state = _StubState(
             san_history=["e4", "e5", "Nf3", "Qh4", "Nxh4"],
             last_move_san="Nxh4",
@@ -203,10 +205,13 @@ class TestCommentaryGateHook:
         directive = ctx.session.state.get("commentary_directive")
         assert directive is not None
         lowered = directive.lower()
-        # Wording simplified by the LLM eval harness — assert on the
-        # core constraint (no inventing beyond FACTS) rather than any
-        # specific phrase that may change as we tune.
-        assert "inventing" in lowered or "beyond the facts" in lowered or "stay grounded" in lowered
+        # FACTS block is what grounds the model; it names the pieces,
+        # squares, captures, and classification.
+        assert "facts" in lowered
+        # Named facts we expect in this mid-game position.
+        assert "knight from f3 to h4" in lowered
+        assert "capturing a queen" in lowered
+        assert "blunder" in lowered
 
     def test_directive_invites_persona_voice(self):
         """The directive must cue the model to speak 'in persona' — the
