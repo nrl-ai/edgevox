@@ -1097,11 +1097,21 @@ class Compactor:
             return False
         return estimate_tokens(messages, llm) >= self.trigger_tokens
 
-    def compact(self, messages: list[dict], llm: LLM | None) -> list[dict]:
+    def compact(
+        self,
+        messages: list[dict],
+        llm: LLM | None,
+        *,
+        stop_event: threading.Event | None = None,
+    ) -> list[dict]:
         """Return a compacted copy of ``messages``.
 
         If ``llm`` is None (test / offline path), falls back to a
         deterministic truncation that keeps system + last N turns.
+
+        ``stop_event`` — when supplied, plumbed into ``llm.complete``
+        so a barge-in halts the summariser within one decode step
+        instead of running to ``summary_max_tokens``.
         """
         if not self.should_compact(messages, llm):
             return list(messages)
@@ -1126,7 +1136,7 @@ class Compactor:
             # re-inflating the context with raw tool payloads.
             conv_only, tool_trace = _split_tool_chain(to_compress)
             if conv_only:
-                conv_summary = self._summarize(conv_only, llm)
+                conv_summary = self._summarize(conv_only, llm, stop_event=stop_event)
                 out.append(
                     {
                         "role": "assistant",
@@ -1141,7 +1151,7 @@ class Compactor:
                     }
                 )
         else:
-            summary = self._summarize(to_compress, llm)
+            summary = self._summarize(to_compress, llm, stop_event=stop_event)
             out.append(
                 {
                     "role": "assistant",
@@ -1152,7 +1162,13 @@ class Compactor:
         out.extend(keep)
         return out
 
-    def _summarize(self, messages: list[dict], llm: LLM | None) -> str:
+    def _summarize(
+        self,
+        messages: list[dict],
+        llm: LLM | None,
+        *,
+        stop_event: threading.Event | None = None,
+    ) -> str:
         """Single-shot summary via the same LLM. Falls back to a
         bullet-list of roles + first-80-chars when LLM unavailable."""
         if llm is not None:
@@ -1164,7 +1180,17 @@ class Compactor:
                         "content": "Summarize this conversation:\n\n" + _render_messages_for_summary(messages),
                     },
                 ]
-                result = llm.complete(prompt, max_tokens=self.summary_max_tokens, temperature=0.3)
+                try:
+                    result = llm.complete(
+                        prompt,
+                        max_tokens=self.summary_max_tokens,
+                        temperature=0.3,
+                        stop_event=stop_event,
+                    )
+                except TypeError:
+                    # Back-compat for LLM shims (tests) that predate
+                    # the ``stop_event`` kwarg.
+                    result = llm.complete(prompt, max_tokens=self.summary_max_tokens, temperature=0.3)
                 text = result["choices"][0]["message"].get("content") or ""
                 return text.strip() or _fallback_summary(messages)
             except Exception:

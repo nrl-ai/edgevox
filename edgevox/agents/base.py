@@ -473,15 +473,16 @@ class LLMAgent:
         # so hooks can reach them via ``ctx.tool_registry`` / ``ctx.llm``
         # (typed fields) without touching ``ctx.state``. The legacy
         # ``ctx.state["__tool_registry__"]`` / ``["__llm__"]`` keys are
-        # still populated for a single release as a back-compat shim —
-        # remove once no external hook depends on them.
+        # still populated as a back-compat shim — scheduled for removal
+        # in v1.4.0 so external hook packages have two release cycles
+        # to migrate to the typed fields.
         prev_tool_registry = ctx.tool_registry
         prev_llm = ctx.llm
         ctx.tool_registry = self._tool_registry
         if self._llm is not None:
             ctx.llm = self._llm
-        # Back-compat: legacy magic keys. Safe to remove after external
-        # hook packages migrate — no framework code reads these now.
+        # Back-compat magic keys — remove in v1.4.0 (no framework code
+        # reads these; kept only for third-party hooks).
         prev_state_tool_registry = ctx.state.get("__tool_registry__")
         prev_state_llm = ctx.state.get("__llm__")
         ctx.state["__tool_registry__"] = self._tool_registry

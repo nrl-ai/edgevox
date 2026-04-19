@@ -1,6 +1,6 @@
 # Hooks
 
-The hook system is how EdgeVox lets you change agent-loop behaviour without patching core. A hook is a small callable that fires at one or more of six **fire points** in [`LLMAgent._drive`](./agent-loop.md); it inspects the payload, optionally modifies it, and tells the loop whether to continue, replace the payload, or end the turn.
+The hook system is how EdgeVox lets you change agent-loop behaviour without patching core. A hook is a small callable that fires at one or more of six **fire points** inside [`LLMAgent.run()`](/documentation/agent-loop); it inspects the payload, optionally modifies it, and tells the loop whether to continue, replace the payload, or end the turn.
 
 Everything in `hooks_builtin.py` + `hooks_slm.py` is a composition of exactly this contract.
 
@@ -167,5 +167,5 @@ def test_my_hook_short_circuits():
 
 ## See also
 
-- [`agent-loop.md`](./agent-loop.md) — the loop itself.
-- [`interrupt.md`](./interrupt.md) — how hooks cooperate with barge-in.
+- [`agent-loop`](/documentation/agent-loop) — the loop itself.
+- [`interrupt`](/documentation/interrupt) — how hooks cooperate with barge-in.

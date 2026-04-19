@@ -166,5 +166,5 @@ Drop tools via ``include=(...)`` — e.g. ``memory_tools(store, include=("recall
 
 ## See also
 
-- [`hooks.md`](./hooks.md) — memory-related hooks + composition.
-- [`agent-loop.md`](./agent-loop.md) — where compaction + injection hooks fire.
+- [`hooks`](/documentation/hooks) — memory-related hooks + composition.
+- [`agent-loop`](/documentation/agent-loop) — where compaction + injection hooks fire.

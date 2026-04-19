@@ -13,6 +13,7 @@ installed, with zero extra dependencies.
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -20,6 +21,8 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from edgevox.agents.skills import GoalHandle, GoalStatus
+
+log = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -121,9 +124,11 @@ class ToyWorld:
 
     def render(self) -> None:  # pragma: no cover — overridable
         state = self.get_world_state()
-        print(
-            f"[ToyWorld] robot@({state['robot']['x']:.1f},{state['robot']['y']:.1f}) "
-            f"bat={state['robot']['battery_pct']:.0f}%"
+        log.info(
+            "[ToyWorld] robot@(%.1f,%.1f) bat=%.0f%%",
+            state["robot"]["x"],
+            state["robot"]["y"],
+            state["robot"]["battery_pct"],
         )
 
     # ----- actions -----

@@ -30,7 +30,7 @@ flowchart TD
 
 3. **Interrupt pre-emption at three points.** The loop checks `ctx.should_stop()` (a) before each hop, (b) between parallel tool dispatches, and (c) — via `stop_event` threaded into llama-cpp — between sampled tokens.
 
-4. **Six fire points, in fixed order.** `ON_RUN_START → BEFORE_LLM → AFTER_LLM → (BEFORE_TOOL → dispatch → AFTER_TOOL)* → ON_RUN_END`. The `BEFORE_TOOL`/`AFTER_TOOL` pair fires per tool in parallel; the others are per-turn. Hooks see payloads defined in [`hooks.md`](./hooks.md).
+4. **Six fire points, in fixed order.** `ON_RUN_START → BEFORE_LLM → AFTER_LLM → (BEFORE_TOOL → dispatch → AFTER_TOOL)* → ON_RUN_END`. The `BEFORE_TOOL`/`AFTER_TOOL` pair fires per tool in parallel; the others are per-turn. Hooks see payloads defined in [`hooks`](/documentation/hooks).
 
 5. **Hop budget.** Default `max_tool_hops=3`. Hitting it ends the turn with the last `content` as the fallback reply — no runaway loops.
 
@@ -58,7 +58,7 @@ Skill dispatch (long-running goal-oriented tasks) runs synchronously inside the 
 
 ## Tool-call parsing
 
-`llm.complete()` returns either a structured `tool_calls` field (chat templates that natively emit OpenAI-shaped function calls) or free-form `content` (most SLMs). For the free-form case the parser chain runs against the **raw** content first — which recovers tool calls emitted inside `<think>...</think>` blocks (Qwen3 et al.) — then falls back to the `<think>`-stripped content. The user-facing reply is always derived from the stripped text so chain-of-thought never reaches TTS. See [`tool-calling.md`](./tool-calling.md).
+`llm.complete()` returns either a structured `tool_calls` field (chat templates that natively emit OpenAI-shaped function calls) or free-form `content` (most SLMs). For the free-form case the parser chain runs against the **raw** content first — which recovers tool calls emitted inside `<think>...</think>` blocks (Qwen3 et al.) — then falls back to the `<think>`-stripped content. The user-facing reply is always derived from the stripped text so chain-of-thought never reaches TTS. See [`tool-calling`](/documentation/tool-calling).
 
 ## Handoff path
 
@@ -91,6 +91,6 @@ The subagent runs with a **fresh `Session`** (clean history) but the same `deps`
 
 ## See also
 
-- [`hooks.md`](./hooks.md) — authoring hooks; payload shapes per fire point.
-- [`interrupt.md`](./interrupt.md) — barge-in + cancel-token semantics.
-- [`tool-calling.md`](./tool-calling.md) — parser chain and grammar-constrained decoding.
+- [`hooks`](/documentation/hooks) — authoring hooks; payload shapes per fire point.
+- [`interrupt`](/documentation/interrupt) — barge-in + cancel-token semantics.
+- [`tool-calling`](/documentation/tool-calling) — parser chain and grammar-constrained decoding.

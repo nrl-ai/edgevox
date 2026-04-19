@@ -186,5 +186,5 @@ Handler exceptions are logged but don't propagate.
 
 ## See also
 
-- [`agent-loop.md`](./agent-loop.md) — where the loop checks `ctx.should_stop()`.
-- [`pipeline.md`](./pipeline.md) — how the audio stack plugs in.
+- [`agent-loop`](/documentation/agent-loop) — where the loop checks `ctx.should_stop()`.
+- [`pipeline`](/documentation/pipeline) — how the audio stack plugs in.

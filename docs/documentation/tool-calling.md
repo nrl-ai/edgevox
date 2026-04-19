@@ -108,5 +108,5 @@ agent = LLMAgent(
 
 ## See also
 
-- [`agent-loop.md`](./agent-loop.md) — where the parser chain slots into `_drive`.
+- [`agent-loop`](/documentation/agent-loop) — where the parser chain slots into the loop.
 - [SGLang function_call](https://docs.sglang.io/advanced_features/tool_parser.html) — upstream source for vendored detectors.

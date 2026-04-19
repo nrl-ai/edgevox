@@ -634,7 +634,10 @@ class ContextWindowManager:
         if not session.messages:
             return
         llm = ctx.llm or ctx.state.get("__llm__")
-        new_messages = self.compactor.compact(session.messages, llm)
+        stop_event = (
+            ctx.interrupt.cancel_token if ctx.interrupt is not None and ctx.interrupt.policy.cancel_llm else None
+        )
+        new_messages = self.compactor.compact(session.messages, llm, stop_event=stop_event)
         if new_messages is not session.messages and new_messages != session.messages:
             session.messages[:] = new_messages
             log.info("ContextWindowManager: compacted to %d messages", len(new_messages))
@@ -818,7 +821,10 @@ class ContextCompactionHook:
         # scratchpad key remains as a back-compat fallback for older
         # hook wiring.
         llm = self.llm_getter(ctx) if self.llm_getter else (ctx.llm or ctx.state.get("__llm__"))
-        new_messages = self.compactor.compact(session.messages, llm)
+        stop_event = (
+            ctx.interrupt.cancel_token if ctx.interrupt is not None and ctx.interrupt.policy.cancel_llm else None
+        )
+        new_messages = self.compactor.compact(session.messages, llm, stop_event=stop_event)
         if new_messages is not session.messages and new_messages != session.messages:
             session.messages[:] = new_messages
             log.info("Context compacted: %d messages remain", len(new_messages))

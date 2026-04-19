@@ -118,7 +118,7 @@ bg = BackgroundAgent(
 
 ### Orchestrator + workers
 
-The router emits a `handoff_to_<worker>` call; the target runs with a fresh `Session` and shared LLM. See [`agent-loop.md`](./agent-loop.md) for the handoff mechanics.
+The router emits a `handoff_to_<worker>` call; the target runs with a fresh `Session` and shared LLM. See [`agent-loop`](/documentation/agent-loop) for the handoff mechanics.
 
 ### Supervisor + volunteers (blackboard pattern)
 
@@ -146,5 +146,5 @@ Already shipped (see `Supervisor`, `Orchestrator` above) plus the future directi
 
 ## See also
 
-- [`agent-loop.md`](./agent-loop.md) — handoff short-circuit.
-- [`hooks.md`](./hooks.md) — ctx-level hooks propagate through subagents.
+- [`agent-loop`](/documentation/agent-loop) — handoff short-circuit.
+- [`hooks`](/documentation/hooks) — ctx-level hooks propagate through subagents.
