@@ -30,6 +30,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -245,7 +246,12 @@ class Blackboard:
 
             def _timeout() -> None:
                 if not fut.done():
-                    fut.set_exception(TimeoutError(f"post_request({request_key!r}) timed out after {timeout:.3f}s"))
+                    # ``concurrent.futures.TimeoutError`` is aliased to the
+                    # builtin ``TimeoutError`` on Python 3.11+ but is a
+                    # distinct class on 3.10 — use the futures one so callers
+                    # catching ``concurrent.futures.TimeoutError`` work on
+                    # every supported interpreter.
+                    fut.set_exception(FutureTimeout(f"post_request({request_key!r}) timed out after {timeout:.3f}s"))
 
             timer = threading.Timer(timeout, _timeout)
             timer.daemon = True
