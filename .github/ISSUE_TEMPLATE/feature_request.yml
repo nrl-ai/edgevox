@@ -1,0 +1,45 @@
+name: Feature request
+description: Something is missing, awkward, or could work better.
+title: "[feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that EdgeVox makes hard?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Sketch the API, flow, or behaviour you have in mind. Concrete is better than abstract.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you try or think about? Why didn't they work?
+
+  - type: dropdown
+    id: contributing
+    attributes:
+      label: Are you willing to send a PR?
+      options:
+        - "Yes — I'd like to implement this"
+        - "Maybe, with guidance"
+        - "No, just proposing"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have searched [existing issues](https://github.com/nrl-ai/edgevox/issues) and this is not a duplicate.
+          required: true

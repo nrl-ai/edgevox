@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussions
+    url: https://github.com/nrl-ai/edgevox/discussions
+    about: Questions, design conversations, "how do I" — start here before opening an issue.
+  - name: Documentation
+    url: https://edgevox.nrl.ai
+    about: Architecture, hooks, memory, multi-agent, voice pipeline, ROS2 integration.

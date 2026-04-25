@@ -1,0 +1,17 @@
+# EdgeVox CODEOWNERS — controls automatic review requests on PRs.
+# Anyone listed here is requested as a reviewer when files matching
+# their pattern change. Patterns follow the same syntax as .gitignore.
+# https://docs.github.com/en/repositories/managing-your-repositories-settings-and-customization/customizing-your-repository/about-code-owners
+
+# Default reviewer for everything in the repo.
+*                              @vietanhdev
+
+# Areas — uncomment and add reviewers as the team grows.
+# /edgevox/llm/                @vietanhdev
+# /edgevox/stt/                @vietanhdev
+# /edgevox/tts/                @vietanhdev
+# /edgevox/agents/             @vietanhdev
+# /edgevox/integrations/ros2/  @vietanhdev
+# /docs/                       @vietanhdev
+# /.github/workflows/          @vietanhdev
+# /pyproject.toml              @vietanhdev
