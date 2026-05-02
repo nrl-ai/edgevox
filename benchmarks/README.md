@@ -62,13 +62,13 @@ diff <(jq -S '.results' benchmarks/results/baseline_tool_parsing.json) \
 | Bench | What it measures | Inputs | Status |
 |---|---|---|---|
 | `perf/bench_tool_parsing.py` | `parse_tool_calls()` throughput across all 7 detector formats (Hermes, Mistral, Qwen2.5, Llama-3.2, Granite, Pythonic, xLAM) | Synthetic but format-faithful tool-call payloads, 10 calls each | shipped |
+| `perf/bench_safety_preempt.py` | wall-clock from `handle.cancel()` to handle status reaching CANCELLED, swept across realistic skill poll quanta (0 / 10 / 25 / 50 / 100 ms) | Pure framework primitive — no LLM, no STT, no models | shipped |
 
 ## What's coming
 
 | Bench | What it will measure | Why |
 |---|---|---|
 | `perf/bench_voice_ttft.py` | end-to-end first-audio latency on the device that runs it | The headline number EdgeVox is built around — must be measured per-hardware, not projected |
-| `perf/bench_safety_preempt.py` | wall-clock from stop-word frame to skill `cancel()` resolved | The "halt before LLM" architectural claim needs a number |
 | `accuracy/bench_stt_quality.py` | WER per language on a public corpus (CommonVoice slices) | Voice pipeline quality vs whisper baseline |
 | `accuracy/bench_tool_dispatch.py` | tool-name + arg-binding correctness on a held-out prompt set | SLM hardening claim ("no malformed JSON, no fabricated tool names") needs a number |
 

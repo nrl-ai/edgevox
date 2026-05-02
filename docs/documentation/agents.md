@@ -388,6 +388,8 @@ on its next physics tick`"]
 
 The LLM never runs on the critical stop path. Stop-words land in a hardcoded set inside `SafetyMonitor`, propagate as a `StopFrame`, flip `ctx.stop`, and the skill dispatcher preempts in-flight goals — the halt path is bounded by VAD frame size + skill-poll interval, not by LLM round-trip.
 
+The cancellation primitive itself is sub-millisecond: [`benchmarks/perf/bench_safety_preempt.py`](https://github.com/nrl-ai/edgevox/blob/main/benchmarks/perf/bench_safety_preempt.py) reports a framework-overhead floor of ~0.1 ms median (`threading.Event` signal + worker observing `should_cancel()`), with worst-case latency converging on the skill body's poll quantum — see [`benchmarks/results/baseline_safety_preempt.json`](https://github.com/nrl-ai/edgevox/blob/main/benchmarks/results/baseline_safety_preempt.json) for the committed numbers.
+
 ## Workflows — behavior-tree-shaped composition
 
 Workflows compose agents. Every workflow implements the `Agent` protocol so nested compositions work:
