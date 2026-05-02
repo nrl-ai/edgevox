@@ -182,6 +182,44 @@ hardened = Loop(
 
 A future recipe (`PlanThenLoop`) will package this exact composition.
 
+## `PlanThenLoop`
+
+Iterative wrapper around `PlanExecuteEvaluate`. Single-shot is structurally correct (separate evaluator) but a small evaluator can still emit a wrong PASS on multi-step tasks — the failure mode the model-size benchmark above captured on Gemma 4 E2B. `PlanThenLoop` runs the recipe up to N times, exits early on either:
+
+1. `world_predicate(): -> bool` — caller-supplied. Reads external ground truth (sim state, sensor reading, file existence). When `True`, the loop exits with PASS regardless of what the LLM evaluator said.
+2. `VERDICT: PASS` — trust optimistically when no `world_predicate` is supplied.
+
+Failed iterations feed forward: iteration N+1's planner gets the previous evaluator reasoning appended to its task. A model that under-planned step 2 on iteration 1 has a shot at fixing it on iteration 2.
+
+```python
+from edgevox.agents.workflow_recipes import PlanThenLoop
+
+recipe = PlanThenLoop.build(
+    planner_llm=planner_llm,
+    executor_llm=executor_llm,
+    evaluator_llm=evaluator_llm,
+    tools=[set_light, navigate_to],
+    world_predicate=lambda: (
+        world.kitchen.light_on
+        and world.robot.at_room("bedroom")
+    ),
+    max_iterations=3,
+)
+result = recipe.run("turn on kitchen, drive to bedroom")
+```
+
+**When to reach for `PlanThenLoop` over `PlanExecuteEvaluate`**:
+
+| Property | `PlanExecuteEvaluate` | `PlanThenLoop` |
+|---|---|---|
+| LLM cost | 3 hops baseline (planner + executor + evaluator) | up to 3 × `max_iterations` |
+| Cost on success | 3 hops | 3 hops (exits on first PASS) |
+| Cost on failure | 3 hops (reports FAIL) | 3 × `max_iterations` (last resort) |
+| Right pick when | Single-shot evaluation is acceptable | Tasks where the executor can plausibly recover with feedback (multi-step plans, flaky tools, partial-state worlds) |
+| Ground-truth verification | None | Optional `world_predicate` overrides the LLM verdict |
+
+**Anti-pattern**: don't reach for `PlanThenLoop` when the underlying task is genuinely impossible. The planner and evaluator will burn iterations re-planning a task that has no valid plan, and the final FAIL is no more informative than the single-shot one. `PlanThenLoop` rescues *recoverable* under-execution — it doesn't rescue mis-specification.
+
 ## See also
 
 - [Agents & Tools](agents.md) — the `LLMAgent`, `@tool` and `@skill` decorators that the recipe wraps
