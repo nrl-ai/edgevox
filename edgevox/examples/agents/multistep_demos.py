@@ -385,6 +385,195 @@ def _irsim_patrol(args: argparse.Namespace) -> int:
         world._phys_thread.join(timeout=1.0)
 
 
+# ---- Scenario E: MuJoCo pick-and-place (full action surface) ----
+
+
+def _mujoco_pick_and_place(args: argparse.Namespace) -> int:
+    """Cool flow: list -> grasp red -> move_to drop zone -> release -> goto_home.
+
+    Exercises every action the arm sim exposes in a single agent run.
+    """
+    try:
+        import mujoco  # noqa: F401
+    except ImportError:
+        print("[error] mujoco is not installed", file=sys.stderr)
+        return 2
+
+    from edgevox.agents.skills import skill
+    from edgevox.integrations.sim.mujoco_arm import MujocoArmEnvironment
+
+    print("[demo] loading MuJoCo gantry scene (headless)...", file=sys.stderr)
+    world = MujocoArmEnvironment(model_source="gantry", render=False, allow_hf_download=False)
+    events: list[tuple[str, dict]] = []
+
+    @tool
+    def list_objects() -> str:
+        """List freejoint objects on the table with their positions."""
+        h = world.apply_action("list_objects")
+        h.poll(timeout=2.0)
+        events.append(("list_objects", {"result": h.result}))
+        return json.dumps(h.result)
+
+    @skill(latency_class="slow", timeout_s=15.0)
+    def grasp(object: str, ctx):
+        """Grasp a named object body.
+
+        Args:
+            object: body name (red_cube / green_cube / blue_cube).
+        """
+        events.append(("grasp", {"object": object}))
+        return ctx.deps.apply_action("grasp", object=object)
+
+    @skill(latency_class="slow", timeout_s=15.0)
+    def move_to(x: float, y: float, z: float, ctx):
+        """Move arm end effector to (x, y, z).
+
+        Args:
+            x: target x (m).
+            y: target y (m).
+            z: target z (m).
+        """
+        events.append(("move_to", {"x": x, "y": y, "z": z}))
+        return ctx.deps.apply_action("move_to", x=x, y=y, z=z)
+
+    @skill(latency_class="slow", timeout_s=15.0)
+    def release(ctx):
+        """Release the gripper."""
+        events.append(("release", {}))
+        return ctx.deps.apply_action("release")
+
+    @skill(latency_class="slow", timeout_s=15.0)
+    def goto_home(ctx):
+        """Return to home pose."""
+        events.append(("goto_home", {}))
+        return ctx.deps.apply_action("goto_home")
+
+    if args.scripted:
+        llm = _scripted(
+            [
+                _calls(("list_objects", {})),
+                _calls(("grasp", {"object": "red_cube"})),
+                _calls(("move_to", {"x": 0.0, "y": 0.3, "z": 0.5})),
+                _calls(("release", {})),
+                _calls(("goto_home", {})),
+                _reply("Red cube relocated to (0.0, 0.3, 0.5); arm returned home."),
+            ]
+        )
+    else:
+        llm = _build_real_llm(args.model)
+
+    agent = LLMAgent(
+        name="PickerBot",
+        description="full-surface arm",
+        instructions=(
+            "You drive a robot arm with these primitives: list_objects, grasp, "
+            "move_to(x,y,z), release, goto_home. To MOVE an object, you must: "
+            "1) grasp it, 2) move_to the destination, 3) release, 4) goto_home. "
+            "Plan the full sequence; reply with one sentence."
+        ),
+        tools=[list_objects],
+        skills=[grasp, move_to, release, goto_home],
+        max_tool_hops=8,
+        llm=llm,
+    )
+
+    ctx = AgentContext(deps=world, stop=threading.Event())
+    print(f"[task] {args.task!r}")
+    result = agent.run(args.task, ctx)
+    print()
+    print("--- Reply ---")
+    print(result.reply)
+    print()
+    print("Events:")
+    for n, a in events:
+        print(f"  - {n}({a})")
+    return 0
+
+
+# ---- Scenario F: IR-SIM battery-aware ----
+
+
+def _irsim_battery_aware(args: argparse.Namespace) -> int:
+    """Read battery first; navigate only if healthy. State-driven branching."""
+    try:
+        import irsim  # noqa: F401
+    except ImportError:
+        print("[error] irsim not installed", file=sys.stderr)
+        return 2
+
+    from edgevox.agents.skills import skill
+    from edgevox.integrations.sim.irsim import IrSimEnvironment
+
+    print("[demo] loading IR-SIM apartment...", file=sys.stderr)
+    world = IrSimEnvironment(render=False, tick_interval=0.02)
+    try:
+        events: list[tuple[str, dict]] = []
+
+        @tool
+        def battery_level() -> str:
+            """Return battery percentage."""
+            h = world.apply_action("battery_level")
+            h.poll(timeout=1.0)
+            events.append(("battery_level", h.result))
+            return json.dumps(h.result)
+
+        @tool
+        def list_rooms() -> str:
+            """List rooms."""
+            h = world.apply_action("list_rooms")
+            h.poll(timeout=1.0)
+            events.append(("list_rooms", {"result": h.result}))
+            return ", ".join(h.result)
+
+        @skill(latency_class="slow", timeout_s=10.0)
+        def navigate_to(room: str, ctx):
+            """Drive to a named room.
+
+            Args:
+                room: target room.
+            """
+            events.append(("navigate_to", {"room": room}))
+            return ctx.deps.apply_action("navigate_to", room=room)
+
+        if args.scripted:
+            llm = _scripted(
+                [
+                    _calls(("battery_level", {})),
+                    _calls(("navigate_to", {"room": "office"})),
+                    _reply("Battery healthy at 95%; navigating to office."),
+                ]
+            )
+        else:
+            llm = _build_real_llm(args.model)
+
+        agent = LLMAgent(
+            name="CautiousNav",
+            description="battery-aware nav",
+            instructions=(
+                "Read battery_level first. If battery >= 50%, navigate to the "
+                "requested room. Else reply you'll wait. Keep replies brief."
+            ),
+            tools=[battery_level, list_rooms],
+            skills=[navigate_to],
+            llm=llm,
+        )
+
+        ctx = AgentContext(deps=world, stop=threading.Event())
+        print(f"[task] {args.task!r}")
+        result = agent.run(args.task, ctx)
+        print()
+        print("--- Reply ---")
+        print(result.reply)
+        print()
+        print("Events:")
+        for n, a in events:
+            print(f"  - {n}({a})")
+        return 0
+    finally:
+        world._phys_stop.set()
+        world._phys_thread.join(timeout=1.0)
+
+
 # ---- Main ----
 
 
@@ -395,7 +584,9 @@ _DISPATCH = {
     ),
     "toyworld_approval_then_run": (_toyworld_approval_gate, "drive to the bedroom (privileged)"),
     "irsim_patrol": (_irsim_patrol, "list known rooms then drive to the kitchen"),
+    "irsim_battery_aware": (_irsim_battery_aware, "drive to the office if you have enough battery"),
     "mujoco_pick_red": (_mujoco_pick_red, "pick up the red cube and return home"),
+    "mujoco_pick_and_place": (_mujoco_pick_and_place, "move the red cube to (0.0, 0.3, 0.5)"),
 }
 
 
