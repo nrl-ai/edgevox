@@ -1218,7 +1218,26 @@ class _ReActRunner:
             should_continue = False
             reason = ""
 
-            if self._completion_check is not None:
+            # Termination requires BOTH:
+            #   1. Reply contains TASK COMPLETE marker
+            #      (and isn't promise-language polluted).
+            #   2. completion_check (if set) returns True.
+            # Either failing -> re-prompt.
+
+            marker_ok = _TERMINATION_MARKER in (result.reply or "").upper()
+            promise_blocking = self._auto_continue and self._is_promise(result.reply)
+
+            if not marker_ok:
+                should_continue = True
+                reason = f"reply did not contain the {_TERMINATION_MARKER!r} marker"
+            elif promise_blocking:
+                should_continue = True
+                reason = "promise language detected after marker"
+
+            # Predicate is a gate, not a positive signal -- weak models
+            # can emit TASK COMPLETE prematurely. Predicate False
+            # overrides marker presence.
+            if not should_continue and self._completion_check is not None:
                 try:
                     done = bool(self._completion_check(ctx))
                 except Exception:
@@ -1226,13 +1245,6 @@ class _ReActRunner:
                 if not done:
                     should_continue = True
                     reason = "completion_check returned False"
-            else:
-                if _TERMINATION_MARKER not in (result.reply or "").upper():
-                    should_continue = True
-                    reason = f"reply did not contain the {_TERMINATION_MARKER!r} marker"
-                elif self._auto_continue and self._is_promise(result.reply):
-                    should_continue = True
-                    reason = "promise language detected after marker"
 
             if not should_continue:
                 break

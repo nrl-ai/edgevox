@@ -111,13 +111,15 @@ class TestReActAgent:
 
         scripted = ScriptedLLM(
             [
-                # First inner.run: model fires one tool, claims done.
+                # First inner.run: model fires one tool, claims done WITH marker
+                # (so the marker check passes -- but the predicate sees only
+                # one light is on and overrides).
                 call("set_light", room="kitchen", on=True),
-                reply("Done."),
-                # Second inner.run (after re-prompt): model fires the
-                # second tool then properly stops.
+                reply("TASK COMPLETE: kitchen light is on."),
+                # Re-prompt forces another round; model fires the
+                # second tool then emits a real completion.
                 call("set_light", room="living_room", on=True),
-                reply("Now both lights are on."),
+                reply("TASK COMPLETE: now both lights are on."),
             ]
         )
 
