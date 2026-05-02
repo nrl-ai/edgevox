@@ -154,6 +154,36 @@ def dispatch_mode_extra_args() -> list[tuple[tuple[Any, ...], dict[str, Any]]]:
     ]
 
 
+def physical_action_check(action_log: list, physical_tool_names: set[str]) -> Callable[[Any], bool]:
+    """Build a completion-check predicate that fails until at least one
+    *physical* action tool has fired.
+
+    Use this when a robot agent's user-facing requests imply physical
+    motion (sort, arrange, pick, place) and weak local models stop
+    after a diagnostic call (list_objects, locate_object). The recheck
+    loop will keep nudging the model until it actually fires a
+    physical tool.
+
+    Args:
+        action_log: a mutable list that the calling code appends
+            ``(tool_name, args)`` tuples to as tools fire. Wire an
+            ``after_tool`` hook to keep it up to date.
+        physical_tool_names: set of tool/skill names that count as
+            physical action (e.g. ``{"grasp", "move_to_point",
+            "release", "goto_home"}``).
+
+    Returns:
+        A callable ``check(ctx) -> bool`` suitable for passing as
+        ``completion_check=`` on :class:`ReActAgent.build` or
+        :func:`apply_dispatch_mode`.
+    """
+
+    def _check(ctx: Any) -> bool:
+        return any(name in physical_tool_names for name, _ in action_log)
+
+    return _check
+
+
 def apply_dispatch_mode(
     app: AgentApp,
     args: argparse.Namespace,
