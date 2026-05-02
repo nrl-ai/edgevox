@@ -642,9 +642,332 @@ class _CritiqueAndRewriteRunner:
         )
 
 
+# ===========================================================================
+# PlannedToolDispatcher
+# ===========================================================================
+
+
+_DEFAULT_PLANNED_DISPATCHER_PLANNER = """\
+You are the planner. The user issued a request. Your job: produce an
+ordered JSON list of tool calls that, executed in order, completes the
+request.
+
+Available actions (name(args): description):
+
+{tool_catalog}
+
+Output ONLY a JSON array, no prose, no markdown fences. Each step:
+
+    {{"tool": "<exact_name_from_above>", "args": {{<arg_name>: <value>, ...}}}}
+
+If the request needs no tools (chit-chat, a question you can answer
+directly, or asking for something not in the catalog), output []. The
+synthesiser will explain.
+
+Plan length should match the request -- one tool per logical step. Do
+NOT batch multiple actions into one step.
+"""
+
+
+_DEFAULT_PLANNED_DISPATCHER_SYNTHESISER = """\
+You are the synthesiser. The user asked for something; an executor ran
+each step on a real environment. Write ONE short plain-text sentence
+summarising what happened. Do not call any tools. Do not enumerate
+steps. Be terse and factual.
+
+User request:
+{task}
+
+Plan executed:
+{plan_summary}
+
+Step results:
+{results_summary}
+"""
+
+
+class PlannedToolDispatcher:
+    """User request -> planner emits ordered tool plan -> direct dispatch -> synthesiser writes the reply.
+
+    Designed for weak / small models where a single agent with many
+    tools attached exhibits sycophancy on chains: it calls the first
+    tool, then synthesises a "done" reply without calling the rest.
+
+    The split:
+
+        Planner (LLM, no tools attached) ─►  produces JSON plan
+                                              [{tool, args}, ...]
+                                                   │
+                                                   ▼
+        Executor driver (Python loop)    ─►  for each step:
+                                                directly dispatch via
+                                                ToolRegistry / Skill.start
+                                                (no LLM in the inner loop)
+                                                   │
+                                                   ▼
+        Synthesiser (LLM, no tools)      ─►  one-sentence user-facing reply
+
+    Why direct dispatch in the inner loop:
+
+    - The planner already produced exact args. There's nothing for an
+      inner LLM to decide.
+    - LLM-per-step is 5-15x slower per step. For a 4-step pick-and-place
+      that's the difference between 2 s and 60 s.
+    - Each step is deterministic: the same args produce the same
+      tool/skill call.
+
+    The returned object is an ``Agent`` -- ``.run(task, ctx) ->
+    AgentResult`` -- so it drops into ``AgentApp(agent=...)`` and
+    composes with every workflow primitive.
+    """
+
+    @staticmethod
+    def build(
+        *,
+        planner_llm: object,
+        synthesiser_llm: object | None = None,
+        tools: list | None = None,
+        skills: list | None = None,
+        max_steps: int = 10,
+        planner_instructions: str | None = None,
+        synthesiser_instructions: str | None = None,
+        name: str = "planned_dispatcher",
+    ) -> _PlannedToolDispatcherRunner:
+        """Build the dispatcher.
+
+        Args:
+            planner_llm: LLM-shape used by the planner agent.
+            synthesiser_llm: LLM-shape for the user-facing summary.
+                Defaults to ``planner_llm`` if None (one model in two
+                roles is fine -- the prompts differ enough).
+            tools: list of ``@tool``-decorated functions (or ``Tool``
+                instances) the planner can include in its plans.
+            skills: list of ``Skill`` instances (cancellable actions).
+            max_steps: hard cap on plan length. Keeps a runaway planner
+                from wiring up an enormous chain.
+            planner_instructions / synthesiser_instructions: overrides
+                of the canonical instruction templates. The defaults
+                are formatted with ``{tool_catalog}`` (planner) and
+                ``{task} / {plan_summary} / {results_summary}``
+                (synthesiser); custom overrides must accept the same
+                placeholders.
+            name: workflow name (shown in event bus + traces).
+
+        Returns:
+            An object with ``.run(task, ctx)`` -> ``AgentResult``.
+        """
+        return _PlannedToolDispatcherRunner(
+            name=name,
+            planner_llm=planner_llm,
+            synthesiser_llm=synthesiser_llm or planner_llm,
+            tools=tools or [],
+            skills=skills or [],
+            max_steps=max_steps,
+            planner_instructions=planner_instructions,
+            synthesiser_instructions=synthesiser_instructions,
+        )
+
+
+class _PlannedToolDispatcherRunner:
+    """Internal runner; see :class:`PlannedToolDispatcher` for docs."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        planner_llm: object,
+        synthesiser_llm: object,
+        tools: list,
+        skills: list,
+        max_steps: int,
+        planner_instructions: str | None,
+        synthesiser_instructions: str | None,
+    ) -> None:
+        from edgevox.agents.skills import Skill
+        from edgevox.llm.tools import _extract
+
+        self.name = name
+        self.description = f"PlannedToolDispatcher({len(tools)} tools, {len(skills)} skills)"
+        self._planner_llm = planner_llm
+        self._synth_llm = synthesiser_llm
+        self._max_steps = max_steps
+        self._planner_instructions = planner_instructions
+        self._synthesiser_instructions = synthesiser_instructions
+
+        self._tools_by_name: dict = {}
+        for t in tools:
+            descriptor = _extract(t)
+            self._tools_by_name[descriptor.name] = descriptor
+
+        self._skills_by_name: dict = {}
+        for s in skills:
+            if not isinstance(s, Skill):
+                raise TypeError(f"{s!r} is not a Skill -- did you forget @skill?")
+            self._skills_by_name[s.name] = s
+
+        self._catalog = self._build_catalog()
+
+    def _build_catalog(self) -> str:
+        import json as _json
+
+        lines: list[str] = []
+        for name, t in sorted(self._tools_by_name.items()):
+            try:
+                params = _json.dumps(t.parameters.get("properties", {}))
+            except Exception:
+                params = "{}"
+            lines.append(f"- {name}{params}: {t.description}")
+        for name, s in sorted(self._skills_by_name.items()):
+            try:
+                params = _json.dumps(s.parameters.get("properties", {}))
+            except Exception:
+                params = "{}"
+            lines.append(f"- {name}{params}: {s.description}")
+        return "\n".join(lines) if lines else "(no actions available)"
+
+    def run(self, task: str, ctx: object | None = None):
+        from edgevox.agents.base import AgentContext
+
+        ctx = ctx or AgentContext()
+
+        plan = self._plan(task, ctx)
+        results = self._execute(plan, ctx)
+        return self._synthesise(task, plan, results, ctx)
+
+    def _plan(self, task: str, ctx: object) -> list[dict]:
+        instructions = (self._planner_instructions or _DEFAULT_PLANNED_DISPATCHER_PLANNER).format(
+            tool_catalog=self._catalog
+        )
+        planner = LLMAgent(
+            name="Planner",
+            description="emits JSON action plan",
+            instructions=instructions,
+            llm=self._planner_llm,  # type: ignore[arg-type]
+        )
+        result = planner.run(task, ctx)
+        return self._parse_plan(result.reply)
+
+    @staticmethod
+    def _parse_plan(text: str) -> list[dict]:
+        import json as _json
+        import re as _re
+
+        # Strip common markdown fences first.
+        text = _re.sub(r"```(?:json)?\s*", "", text or "")
+        text = text.replace("```", "").strip()
+
+        # Find the outermost JSON array. Greedy match works because the
+        # planner is told to emit ONLY the array; if there's prose
+        # around it we still try to recover.
+        match = _re.search(r"\[.*\]", text, _re.DOTALL)
+        if not match:
+            return []
+        try:
+            plan = _json.loads(match.group(0))
+        except _json.JSONDecodeError:
+            return []
+        if not isinstance(plan, list):
+            return []
+        validated: list[dict] = []
+        for step in plan:
+            if not isinstance(step, dict):
+                continue
+            if "tool" not in step or not isinstance(step["tool"], str):
+                continue
+            if "args" not in step or not isinstance(step["args"], dict):
+                step["args"] = {}
+            validated.append(step)
+        return validated
+
+    def _execute(self, plan: list[dict], ctx: object) -> list[dict]:
+        from edgevox.agents.skills import GoalStatus
+        from edgevox.llm.tools import ToolRegistry
+
+        results: list[dict] = []
+        for step in plan[: self._max_steps]:
+            name = step.get("tool")
+            args = step.get("args") or {}
+
+            if name in self._tools_by_name:
+                registry = ToolRegistry()
+                registry.tools[name] = self._tools_by_name[name]
+                call_result = registry.dispatch(name, args, ctx=ctx)
+                results.append(
+                    {
+                        "step": step,
+                        "ok": call_result.error is None,
+                        "result": call_result.result,
+                        "error": call_result.error,
+                    }
+                )
+            elif name in self._skills_by_name:
+                skill_obj = self._skills_by_name[name]
+                handle = skill_obj.start(ctx, **args)
+                if skill_obj.latency_class == "slow":
+                    handle.poll(timeout=skill_obj.timeout_s)
+                ok = handle.status not in (GoalStatus.FAILED, GoalStatus.CANCELLED)
+                results.append(
+                    {
+                        "step": step,
+                        "ok": ok,
+                        "result": handle.result,
+                        "error": handle.error,
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "step": step,
+                        "ok": False,
+                        "result": None,
+                        "error": f"unknown action {name!r}",
+                    }
+                )
+                # Don't keep going past an unknown-tool step.
+                break
+
+            if not results[-1]["ok"]:
+                # Stop on first error -- "replan on error" is a future
+                # extension; for now we surface the failure to the
+                # synthesiser and let the user re-issue if needed.
+                break
+
+        return results
+
+    def _synthesise(self, task: str, plan: list[dict], results: list[dict], ctx: object):
+        from edgevox.agents.base import AgentResult
+
+        # Short-circuit: empty plan + no results -> the planner decided
+        # the request needs no tools, OR couldn't be done. Synthesise
+        # against an empty plan so the LLM explains.
+        plan_summary = "\n".join(f"- {s.get('tool')}({s.get('args', {})})" for s in plan) or "(empty plan)"
+        results_summary = (
+            "\n".join(f"- {r['step'].get('tool')}: " + ("OK" if r["ok"] else f"FAIL ({r['error']})") for r in results)
+            or "(no steps run)"
+        )
+
+        instructions = (self._synthesiser_instructions or _DEFAULT_PLANNED_DISPATCHER_SYNTHESISER).format(
+            task=task, plan_summary=plan_summary, results_summary=results_summary
+        )
+
+        synth = LLMAgent(
+            name="Synthesiser",
+            description="writes the user-facing one-sentence summary",
+            instructions=instructions,
+            llm=self._synth_llm,  # type: ignore[arg-type]
+        )
+        result = synth.run("Write the summary now.", ctx)
+        return AgentResult(
+            reply=result.reply,
+            agent_name=self.name,
+            elapsed=getattr(result, "elapsed", 0.0),
+        )
+
+
 __all__ = [
     "ApprovalGate",
     "CritiqueAndRewrite",
     "PlanExecuteEvaluate",
     "PlanThenLoop",
+    "PlannedToolDispatcher",
 ]
