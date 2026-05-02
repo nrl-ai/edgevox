@@ -275,7 +275,7 @@ Full TUI + slash-command reference: [`docs/documentation/commands.md`](docs/docu
 | MacBook Air M1 | 8 GB | Metal | supported — first-audio latency TBD |
 | Any modern laptop | 16 GB+ | CPU only | supported — first-audio latency TBD |
 
-> Latency cells are intentionally TBD. EdgeVox does not publish projected or untested numbers. Once `benchmarks/perf/voice_ttft.py` runs on a given device, the measured value lands here. PRs welcome with hardware fingerprint + script output.
+> Latency cells are intentionally TBD. EdgeVox does not publish projected or untested numbers. Once `benchmarks/perf/bench_voice_ttft.py` runs on a given device, the measured value lands here. PRs welcome with hardware fingerprint + script output.
 
 ## ROS2 integration
 
