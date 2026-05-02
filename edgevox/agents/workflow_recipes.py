@@ -176,4 +176,178 @@ class PlanExecuteEvaluate:
         return Sequence(name, [planner, executor, evaluator])
 
 
-__all__ = ["PlanExecuteEvaluate"]
+class PlanThenLoop:
+    """Iterative plan-execute-evaluate with a hard goal predicate.
+
+    The single-shot :class:`PlanExecuteEvaluate` recipe is structurally
+    correct -- the evaluator is separate from the executor -- but it
+    can still emit a wrong PASS when the underlying model is small
+    (the failure mode Anthropic's article explicitly names). Picking
+    a stronger model for the evaluator is one fix; the orthogonal fix
+    that this recipe ships is to **loop** the recipe and verify
+    against an external predicate, so a wrong PASS doesn't terminate
+    the run.
+
+    Usage::
+
+        recipe = PlanThenLoop.build(
+            planner_llm=planner_llm,
+            executor_llm=executor_llm,
+            evaluator_llm=evaluator_llm,
+            tools=[set_light, navigate_to],
+            world_predicate=lambda: world.kitchen.light_on
+                                    and world.robot.at_room("bedroom"),
+            max_iterations=3,
+        )
+        result = recipe.run("kitchen on, robot in bedroom")
+
+    Two predicates short-circuit the loop:
+
+    1. ``world_predicate(): -> bool`` -- caller-supplied. Reads
+       external ground truth (sim state, sensor reading, file
+       existence). When this returns ``True`` the loop exits with a
+       PASS verdict regardless of what the LLM evaluator said.
+    2. The evaluator's own ``VERDICT: PASS`` -- exits the loop
+       optimistically, on the assumption that when the model + the
+       world both agree, that's good enough.
+
+    Failed attempts feed forward: the planner on iteration N+1
+    receives the previous evaluator's reasoning as part of its task
+    string, so a model that under-planned step 2 on iteration 1 has
+    a shot at fixing it on iteration 2.
+    """
+
+    @staticmethod
+    def build(
+        *,
+        planner_llm: object,
+        executor_llm: object,
+        evaluator_llm: object,
+        tools: list[Tool] | None = None,
+        skills: list[Skill] | None = None,
+        world_predicate: object | None = None,
+        max_iterations: int = 3,
+        planner_instructions: str | None = None,
+        executor_instructions: str | None = None,
+        evaluator_instructions: str | None = None,
+        name: str = "plan_then_loop",
+        max_tool_hops: int = 5,
+    ) -> _PlanThenLoopRunner:
+        """Build the iterative recipe.
+
+        Args:
+            planner_llm / executor_llm / evaluator_llm: LLM-shaped
+                objects, same contract as :class:`PlanExecuteEvaluate`.
+            tools / skills: attach to the executor only.
+            world_predicate: optional callable (no args) returning
+                ``True`` when the goal is reached as observed in
+                external state. When set, this overrides the LLM
+                evaluator's verdict for early termination.
+            max_iterations: hard cap on how many plan-execute-evaluate
+                rounds run before the recipe gives up and returns
+                the last verdict.
+            planner_instructions / executor_instructions /
+                evaluator_instructions: forwarded to the inner recipe.
+            name: workflow name (shown in event bus + traces).
+            max_tool_hops: forwarded.
+
+        Returns:
+            A workflow object exposing ``.run(task, ctx) -> AgentResult``.
+        """
+        inner = PlanExecuteEvaluate.build(
+            planner_llm=planner_llm,
+            executor_llm=executor_llm,
+            evaluator_llm=evaluator_llm,
+            tools=tools,
+            skills=skills,
+            planner_instructions=planner_instructions,
+            executor_instructions=executor_instructions,
+            evaluator_instructions=evaluator_instructions,
+            name=f"{name}_inner",
+            max_tool_hops=max_tool_hops,
+        )
+        return _PlanThenLoopRunner(
+            name=name,
+            inner=inner,
+            world_predicate=world_predicate,
+            max_iterations=max_iterations,
+        )
+
+
+class _PlanThenLoopRunner:
+    """Internal runner -- iterative driver around PlanExecuteEvaluate.
+
+    Implements the workflow Agent protocol (``run(task, ctx)``) so it
+    composes with Sequence / Retry / Timeout / Parallel just like the
+    underlying Sequence does.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        inner: Sequence,
+        world_predicate: object | None,
+        max_iterations: int,
+    ) -> None:
+        self.name = name
+        self.description = f"PlanThenLoop({inner.description})"
+        self._inner = inner
+        self._world_predicate = world_predicate
+        self._max_iterations = max_iterations
+
+    def run(self, task: str, ctx: object | None = None):
+        """Run plan-execute-evaluate up to max_iterations, exiting early
+        on PASS or world-predicate satisfaction. Returns the last
+        ``AgentResult``.
+        """
+        from edgevox.agents.base import AgentContext, AgentResult
+
+        ctx = ctx or AgentContext()
+        current_task = task
+        last_result: AgentResult | None = None
+        history: list[str] = []
+
+        for i in range(self._max_iterations):
+            result = self._inner.run(current_task, ctx)
+            last_result = result
+            verdict = result.reply
+
+            # World predicate is ground truth -- if it passes, we're
+            # done regardless of what the LLM evaluator said.
+            world_ok = False
+            if self._world_predicate is not None:
+                try:
+                    world_ok = bool(self._world_predicate())
+                except Exception:
+                    world_ok = False
+
+            if world_ok:
+                # Override the verdict to make it explicit that the
+                # world predicate was the source of truth.
+                final = AgentResult(
+                    reply=(
+                        f"VERDICT: PASS -- world predicate satisfied on iteration {i + 1}; "
+                        f"LLM said: {verdict.strip()[:140]}"
+                    ),
+                    agent_name=self.name,
+                    elapsed=getattr(result, "elapsed", 0.0),
+                )
+                return final
+
+            # LLM PASS without a world predicate -- trust optimistically.
+            if self._world_predicate is None and verdict.strip().upper().startswith("VERDICT: PASS"):
+                return result
+
+            # Otherwise: feed the failure forward into the next iteration.
+            history.append(f"Iteration {i + 1} verdict: {verdict.strip()[:200]}")
+            current_task = (
+                f"{task}\n\nPrevious attempts (most recent last):\n"
+                + "\n".join(history)
+                + "\n\nTry again, addressing the issue called out above."
+            )
+
+        return last_result or AgentResult(reply="VERDICT: FAIL -- no iterations ran", agent_name=self.name)
+
+
+__all__ = ["PlanExecuteEvaluate", "PlanThenLoop"]
