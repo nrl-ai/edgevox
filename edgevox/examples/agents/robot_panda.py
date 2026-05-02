@@ -32,13 +32,13 @@ import argparse
 from typing import Any
 
 from edgevox.agents import AgentContext, GoalHandle, skill
-from edgevox.agents.trace_hooks import terminal_trace_hooks
 from edgevox.examples.agents.framework import AgentApp
+from edgevox.examples.agents.framework import dispatch_mode_extra_args as _dispatch_extras
 from edgevox.llm import tool
 
 PANDA_PERSONA = (
-    "You are Panda, a terse pick-and-place robot arm on a tabletop. "
-    "The table has three coloured cubes: red_cube, green_cube, blue_cube.\n\n"
+    "You are Panda, a tabletop pick-and-place robot arm. The table has "
+    "three coloured cubes: red_cube, green_cube, blue_cube.\n\n"
     "Available actions:\n"
     "- move_to_point(x, y, z) — move the tool to a raw position\n"
     "- move_above_object(object) — hover 5 cm above a cube\n"
@@ -47,6 +47,16 @@ PANDA_PERSONA = (
     "- goto_home() — retract the arm to the ready pose\n"
     "- list_objects() / locate_object(name) — read cube positions\n"
     "- get_gripper_state() / get_ee_pose() — read your own state\n\n"
+    "VOCABULARY MAPPING -- map user intents to ACTUAL physical actions:\n"
+    "- 'sort A, B, C' / 'arrange A, B, C' / 'reorder' / 'rearrange' / "
+    "'put in order' / 'organise' = physically MOVE each cube to its new "
+    "spot via grasp -> move_to_point -> release. Reading positions is "
+    "NOT sorting; you must physically pick each cube up and move it.\n"
+    "- 'pick up X' = grasp(X) followed by move_to_point above the table.\n"
+    "- 'put X at (x,y,z)' / 'place X at...' = (assuming holding X) "
+    "move_to_point + release.\n"
+    "- 'swap X and Y' = move X to a temp spot, move Y to X's spot, "
+    "move X to Y's spot.\n\n"
     "RULES:\n"
     "1. CALL ONE TOOL PER RESPONSE. After your tool returns, I will send "
     "you the result and you can call the next one. Do NOT batch tool "
@@ -54,12 +64,12 @@ PANDA_PERSONA = (
     "actually returned.\n"
     "2. To MOVE an object: grasp(object) -> move_to_point(x, y, z) -> "
     "release() -> goto_home(). Each step is a separate response.\n"
-    "3. When the task is fully complete (every step has returned), reply "
-    "with one short plain-text sentence summarising what happened. Do "
-    "NOT call any further tool on that final reply.\n"
+    "3. list_objects / locate_object / get_gripper_state / get_ee_pose "
+    "are DIAGNOSTIC only -- they don't satisfy a 'sort' / 'arrange' / "
+    "'move' request. You MUST follow with actual action calls.\n"
     "4. If a tool returns an error, report it and stop. Do not retry "
     "blindly.\n\n"
-    "Never read raw JSON aloud; keep replies one sentence."
+    "Never read raw JSON aloud; keep replies one short sentence."
 )
 
 _HOVER_CLEARANCE_M = 0.05
@@ -164,6 +174,7 @@ def get_gripper_state(ctx: AgentContext) -> dict[str, Any]:
 
 
 def _pre_run(args: argparse.Namespace) -> None:
+    from edgevox.examples.agents.framework import apply_dispatch_mode
     from edgevox.integrations.sim.mujoco_arm import MujocoArmEnvironment
 
     source = "gantry" if getattr(args, "gantry", False) else "franka"
@@ -171,58 +182,8 @@ def _pre_run(args: argparse.Namespace) -> None:
         model_source=source,
         render=not getattr(args, "no_render", False),
     )
-
-    # Pick the dispatch architecture. Three options:
-    #
-    #   --legacy  : single LLMAgent with all tools attached. Sycophants
-    #               on chains for weak local models (Gemma 4 E2B/E4B):
-    #               model claims release / goto_home without actually
-    #               calling them. Kept for back-compat / benchmarking.
-    #
-    #   --react   : ReActAgent loop -- think -> act -> observe -> repeat.
-    #               LLM iterates until it stops emitting tool calls or
-    #               hits max_iterations. Adapts to tool results. Slower
-    #               (one LLM hop per step), more flexible. Good for
-    #               search / exploration / branching tasks.
-    #
-    #   default   : PlannedToolDispatcher -- planner emits JSON plan,
-    #               Python loop direct-dispatches each step, synthesiser
-    #               writes user-facing reply. Fastest, most reliable for
-    #               tasks where the plan can be determined upfront.
-    common_skills = [move_to_point, move_above_object, grasp, release, goto_home, get_ee_pose]
-    common_tools = [list_objects, locate_object, get_gripper_state]
-
-    if getattr(args, "legacy", False):
-        # Keep the auto-built single-LLMAgent that AgentApp.__post_init__
-        # already wired -- nothing to do here.
-        pass
-    elif getattr(args, "planned", False):
-        from edgevox.agents.workflow_recipes import PlannedToolDispatcher
-
-        APP.agent = PlannedToolDispatcher.build(
-            planner_llm=None,
-            synthesiser_llm=None,
-            tools=common_tools,
-            skills=common_skills,
-            max_steps=10,
-        )
-    else:
-        # Default: ReAct loop. Adapts to tool results, naturally
-        # multi-step, the right shape for free-form voice input where
-        # the agent has to discover state mid-flight ("which cube is
-        # closest", "is the gripper holding anything", "did the grasp
-        # succeed"). PlannedToolDispatcher is faster for upfront-
-        # determinable plans and is available via --planned.
-        from edgevox.agents.trace_hooks import terminal_trace_hooks
-        from edgevox.agents.workflow_recipes import ReActAgent
-
-        APP.agent = ReActAgent.build(
-            llm=None,
-            tools=common_tools,
-            skills=common_skills,
-            hooks=terminal_trace_hooks(),
-            max_iterations=20,
-        )
+    # Default: ReAct loop. Override with --legacy or --planned.
+    apply_dispatch_mode(APP, args)
 
 
 APP = AgentApp(
@@ -242,39 +203,10 @@ APP = AgentApp(
     # framework caps anyway, so a higher number costs nothing on
     # short tasks and unblocks long ones.
     max_tool_hops=10,
-    # Print live trace (LLM reasoning + tool calls + tool returns) to
-    # stderr so the operator can see exactly what the arm is doing in
-    # the terminal alongside the MuJoCo viewer animation.
-    hooks=terminal_trace_hooks(),
     extra_args=[
         (("--no-render",), {"action": "store_true", "help": "Run headless (no MuJoCo viewer)."}),
         (("--gantry",), {"action": "store_true", "help": "Use the bundled gantry arm instead of Franka."}),
-        (
-            ("--legacy",),
-            {
-                "action": "store_true",
-                "help": (
-                    "Use the legacy single-LLMAgent dispatch (sycophants "
-                    "on multi-step chains with weak models -- kept for "
-                    "back-compat and benchmarking)."
-                ),
-            },
-        ),
-        (
-            ("--planned",),
-            {
-                "action": "store_true",
-                "help": (
-                    "Use the PlannedToolDispatcher recipe (planner emits "
-                    "JSON plan up-front, Python loop direct-dispatches "
-                    "each step, synthesiser writes reply) instead of the "
-                    "default ReAct loop. Faster for tasks where the plan "
-                    "is determinable from the user request -- pick + "
-                    "place + release sequences with known coordinates. "
-                    "Doesn't adapt to tool results."
-                ),
-            },
-        ),
+        *_dispatch_extras(),
     ],
     pre_run=_pre_run,
 )

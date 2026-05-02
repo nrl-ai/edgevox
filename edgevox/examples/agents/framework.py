@@ -103,6 +103,136 @@ def _announce_model(console: Console, model: str | None) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Dispatch-mode helpers (shared across robot examples)
+# ---------------------------------------------------------------------------
+
+
+def dispatch_mode_extra_args() -> list[tuple[tuple[Any, ...], dict[str, Any]]]:
+    """Standard argparse extra_args for robot agents that want all
+    three dispatch modes (default ReAct + ``--legacy`` single agent +
+    ``--planned`` upfront-plan dispatcher).
+
+    Use in an :class:`AgentApp` like::
+
+        APP = AgentApp(
+            ...,
+            extra_args=[
+                *dispatch_mode_extra_args(),
+                # robot-specific args
+            ],
+            pre_run=_my_pre_run,
+        )
+
+    And in ``_my_pre_run`` call :func:`apply_dispatch_mode` to swap the
+    agent based on the parsed flags.
+    """
+    return [
+        (
+            ("--legacy",),
+            {
+                "action": "store_true",
+                "help": (
+                    "Use the legacy single-LLMAgent dispatch (sycophants on "
+                    "multi-step chains with weak local models -- kept for "
+                    "back-compat / benchmarking)."
+                ),
+            },
+        ),
+        (
+            ("--planned",),
+            {
+                "action": "store_true",
+                "help": (
+                    "Use PlannedToolDispatcher (planner emits JSON plan up-"
+                    "front, Python loop direct-dispatches each step) instead "
+                    "of the default ReAct loop. Faster for tasks where the "
+                    "plan is determinable from the user request."
+                ),
+            },
+        ),
+    ]
+
+
+def apply_dispatch_mode(
+    app: AgentApp,
+    args: argparse.Namespace,
+    *,
+    tools: Any = None,
+    skills: Any = None,
+    default_mode: str = "react",
+) -> None:
+    """Swap ``app.agent`` based on argparse flags.
+
+    Call this from a robot example's ``pre_run`` callback after building
+    the sim deps. The resulting agent is one of:
+
+    - ``--legacy``: keep the auto-built single :class:`LLMAgent` (does
+      nothing -- the framework's ``__post_init__`` already wired it).
+    - ``--planned``: replace with :class:`PlannedToolDispatcher`
+      (planner -> Python loop -> synthesiser).
+    - default (ReAct): replace with :class:`ReActAgent` (think -> act ->
+      observe loop with TASK COMPLETE termination marker + recheck).
+
+    The ReAct path automatically attaches :func:`terminal_trace_hooks`
+    so the operator sees the agent's reasoning and tool calls in
+    ``--text-mode``.
+
+    Args:
+        app: the :class:`AgentApp` instance (typically the module-level
+            ``APP`` constant).
+        args: parsed argparse namespace from :meth:`AgentApp.run`.
+        tools: tool list to attach to the recipe agent. If None,
+            ``app.tools`` is used.
+        skills: skill list. If None, ``app.skills`` is used.
+        default_mode: which mode wins when no flag is passed. ``"react"``
+            (the canonical agentic-loop default), ``"planned"`` or
+            ``"legacy"``.
+    """
+    tools = tools if tools is not None else (app.tools or [])
+    skills = skills if skills is not None else (app.skills or [])
+
+    if getattr(args, "legacy", False):
+        return  # auto-built LLMAgent stays
+    if getattr(args, "planned", False):
+        from edgevox.agents.workflow_recipes import PlannedToolDispatcher
+
+        app.agent = PlannedToolDispatcher.build(
+            planner_llm=None,
+            synthesiser_llm=None,
+            tools=tools,
+            skills=skills,
+            max_steps=10,
+        )
+        return
+
+    # Default: ReAct loop with terminal trace hooks.
+    if default_mode == "legacy":
+        return
+    if default_mode == "planned":
+        from edgevox.agents.workflow_recipes import PlannedToolDispatcher
+
+        app.agent = PlannedToolDispatcher.build(
+            planner_llm=None,
+            synthesiser_llm=None,
+            tools=tools,
+            skills=skills,
+            max_steps=10,
+        )
+        return
+
+    from edgevox.agents.trace_hooks import terminal_trace_hooks
+    from edgevox.agents.workflow_recipes import ReActAgent
+
+    app.agent = ReActAgent.build(
+        llm=None,
+        tools=tools,
+        skills=skills,
+        hooks=terminal_trace_hooks(),
+        max_iterations=20,
+    )
+
+
 @dataclass
 class AgentApp:
     """Declarative description of a voice-agent example.
