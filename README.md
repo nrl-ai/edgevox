@@ -351,6 +351,7 @@ The LLM never enters the reactive layer. Safety reflexes bypass it. Skills expos
 ## Documentation
 
 - **[Agents & Tools guide](docs/documentation/agents.md)** — full agent framework reference: tools vs skills, workflows, safety monitor, simulation tiers, threading model, anti-patterns
+- **[Workflow recipes](docs/documentation/workflow-recipes.md)** — `PlanExecuteEvaluate` and friends: one-line factories for the multi-agent harness patterns from Anthropic's "Harness Design for Long-running Apps". Includes a runnable demo on ToyWorld + a model-size benchmark
 - **[Architecture](docs/documentation/architecture.md)** — streaming pipeline deep-dive
 - **[Quick start](docs/documentation/quickstart.md)**
 - **[TUI commands](docs/documentation/commands.md)**

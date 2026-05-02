@@ -69,6 +69,7 @@ export default withMermaid(
               { text: "Memory", link: "/documentation/memory" },
               { text: "Multi-agent", link: "/documentation/multiagent" },
               { text: "Tool calling", link: "/documentation/tool-calling" },
+              { text: "Workflow recipes", link: "/documentation/workflow-recipes" },
               { text: "Interrupt & barge-in", link: "/documentation/interrupt" },
             ],
           },
