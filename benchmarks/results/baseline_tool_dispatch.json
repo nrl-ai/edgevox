@@ -1,0 +1,316 @@
+{
+  "bench": "tool_dispatch",
+  "generated": "2026-05-02T10:38:15+0700",
+  "hardware": {
+    "python": "3.13.9",
+    "platform": "Linux-7.0.0-14-generic-x86_64-with-glibc2.43",
+    "machine": "x86_64",
+    "processor": "unknown"
+  },
+  "parse_classification": {
+    "hermes": {
+      "correct": 6,
+      "total": 6,
+      "cases": [
+        {
+          "kind": "happy",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "happy_multi",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "malformed_json",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "pure_prose",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "token_in_fence",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "unknown_tool",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        }
+      ]
+    },
+    "qwen25": {
+      "correct": 6,
+      "total": 6,
+      "cases": [
+        {
+          "kind": "happy",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "happy_multi",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "malformed_json",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "pure_prose",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "token_in_fence",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "unknown_tool",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        }
+      ]
+    },
+    "llama32": {
+      "correct": 6,
+      "total": 6,
+      "cases": [
+        {
+          "kind": "happy",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "happy_multi",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "malformed_json",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "pure_prose",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "token_in_fence",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "unknown_tool",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        }
+      ]
+    },
+    "mistral": {
+      "correct": 6,
+      "total": 6,
+      "cases": [
+        {
+          "kind": "happy",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "happy_multi",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "malformed_json",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "pure_prose",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "token_in_fence",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "unknown_tool",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        }
+      ]
+    },
+    "pythonic": {
+      "correct": 6,
+      "total": 6,
+      "cases": [
+        {
+          "kind": "happy",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "happy_multi",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "malformed_json",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "pure_prose",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "token_in_fence",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "unknown_tool",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        }
+      ]
+    },
+    "xlam": {
+      "correct": 6,
+      "total": 6,
+      "cases": [
+        {
+          "kind": "happy",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "happy_multi",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "malformed_json",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "pure_prose",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "token_in_fence",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "unknown_tool",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        }
+      ]
+    },
+    "granite": {
+      "correct": 6,
+      "total": 6,
+      "cases": [
+        {
+          "kind": "happy",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "happy_multi",
+          "expected_parse": true,
+          "actually_parsed": true,
+          "correct": true
+        },
+        {
+          "kind": "malformed_json",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "pure_prose",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "token_in_fence",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        },
+        {
+          "kind": "unknown_tool",
+          "expected_parse": false,
+          "actually_parsed": false,
+          "correct": true
+        }
+      ]
+    }
+  },
+  "aggregate_parse_score": {
+    "correct": 42,
+    "total": 42
+  },
+  "dispatch_validation": {
+    "valid_call": true,
+    "unknown_name": true,
+    "schema_violation": true,
+    "malformed_json": true
+  }
+}
