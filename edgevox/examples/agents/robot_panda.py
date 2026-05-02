@@ -22,20 +22,34 @@ import argparse
 from typing import Any
 
 from edgevox.agents import AgentContext, GoalHandle, skill
+from edgevox.agents.trace_hooks import terminal_trace_hooks
 from edgevox.examples.agents.framework import AgentApp
 from edgevox.llm import tool
 
 PANDA_PERSONA = (
     "You are Panda, a terse pick-and-place robot arm on a tabletop. "
-    "The table has three coloured cubes: red_cube, green_cube, blue_cube. "
-    "To move the tool to a raw x/y/z position call move_to_point. "
-    "To hover directly above a cube (e.g. before grasping) call move_above_object(object=...). "
-    "To grasp a cube call grasp(object=...); to drop whatever you're holding call release. "
-    "Call goto_home to retract. "
-    "For queries: list_objects lists every cube and its position, locate_object(name) "
-    "returns the position of one cube, get_gripper_state reports whether a cube is held, "
-    "and get_ee_pose returns the current tool position. "
-    "Always reply in one short sentence. Never read raw JSON aloud."
+    "The table has three coloured cubes: red_cube, green_cube, blue_cube.\n\n"
+    "Available actions:\n"
+    "- move_to_point(x, y, z) — move the tool to a raw position\n"
+    "- move_above_object(object) — hover 5 cm above a cube\n"
+    "- grasp(object) — close the gripper on a named cube\n"
+    "- release() — open the gripper\n"
+    "- goto_home() — retract the arm to the ready pose\n"
+    "- list_objects() / locate_object(name) — read cube positions\n"
+    "- get_gripper_state() / get_ee_pose() — read your own state\n\n"
+    "RULES:\n"
+    "1. CALL ONE TOOL PER RESPONSE. After your tool returns, I will send "
+    "you the result and you can call the next one. Do NOT batch tool "
+    "calls; do NOT claim a multi-step plan is done before each step has "
+    "actually returned.\n"
+    "2. To MOVE an object: grasp(object) -> move_to_point(x, y, z) -> "
+    "release() -> goto_home(). Each step is a separate response.\n"
+    "3. When the task is fully complete (every step has returned), reply "
+    "with one short plain-text sentence summarising what happened. Do "
+    "NOT call any further tool on that final reply.\n"
+    "4. If a tool returns an error, report it and stop. Do not retry "
+    "blindly.\n\n"
+    "Never read raw JSON aloud; keep replies one sentence."
 )
 
 _HOVER_CLEARANCE_M = 0.05
@@ -160,6 +174,16 @@ APP = AgentApp(
     greeting=(
         "Panda online. I see three cubes on the table — red, green, and blue. What would you like me to pick up?"
     ),
+    # 10 hops gives the model room for the canonical 4-step pick+place
+    # chain (grasp -> move -> release -> goto_home) plus a few
+    # observation calls (list_objects, locate_object, get_ee_pose). The
+    # framework caps anyway, so a higher number costs nothing on
+    # short tasks and unblocks long ones.
+    max_tool_hops=10,
+    # Print live trace (LLM reasoning + tool calls + tool returns) to
+    # stderr so the operator can see exactly what the arm is doing in
+    # the terminal alongside the MuJoCo viewer animation.
+    hooks=terminal_trace_hooks(),
     extra_args=[
         (("--no-render",), {"action": "store_true", "help": "Run headless (no MuJoCo viewer)."}),
         (("--gantry",), {"action": "store_true", "help": "Use the bundled gantry arm instead of Franka."}),

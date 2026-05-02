@@ -149,6 +149,11 @@ class AgentApp:
     description: str = ""
     extra_args: list[tuple[tuple[Any, ...], dict[str, Any]]] = field(default_factory=list)
     pre_run: Callable[[argparse.Namespace], None] | None = None
+    # Hop budget for the auto-built LLMAgent. Default mirrors LLMAgent's
+    # default (3) so existing apps don't change behaviour. Robot demos
+    # with chains like grasp -> move -> release -> goto_home need 4+;
+    # crank to 8-10 for those.
+    max_tool_hops: int = 3
 
     def __post_init__(self) -> None:
         if self.agent is None and self.tools is None and self.skills is None:
@@ -161,6 +166,7 @@ class AgentApp:
                 tools=self.tools,
                 skills=self.skills,
                 hooks=self.hooks,
+                max_tool_hops=self.max_tool_hops,
             )
 
     def _build_parser(self) -> argparse.ArgumentParser:

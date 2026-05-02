@@ -636,13 +636,17 @@ def _mujoco_llm_choreography(args: argparse.Namespace) -> int:
 
     ctx = AgentContext(deps=world, stop=threading.Event())
 
+    # Live-trace hooks: prints LLM thinking + tool calls + results as
+    # they fire, so the operator can read the agent's reasoning in the
+    # terminal alongside the MuJoCo viewer animation. Shared module so
+    # other demos / agents reuse the same prefix style.
+    from edgevox.agents.trace_hooks import terminal_trace_hooks
+
+    trace_hooks = terminal_trace_hooks()
+
     def _step(skill_obj, instructions: str, task: str, label: str) -> None:
         """One mini-agent run -- the agent has exactly one skill so the
-        LLM has no other option but to call it. We DON'T use
-        ``tool_choice_policy="required_first_hop"`` here because the
-        GBNF grammar generator emits a malformed grammar for the
-        single-skill schema on llama.cpp; the model dispatches the
-        skill anyway when it's the only thing available."""
+        LLM has no other option but to call it."""
         import time as _t
 
         t0 = _t.perf_counter()
@@ -653,6 +657,7 @@ def _mujoco_llm_choreography(args: argparse.Namespace) -> int:
             instructions=instructions,
             skills=[skill_obj],
             llm=llm,
+            hooks=trace_hooks,
             max_tool_hops=2,
         )
         sub.run(task, ctx)
@@ -670,17 +675,48 @@ def _mujoco_llm_choreography(args: argparse.Namespace) -> int:
     print(f"[task] {args.task!r}", flush=True)
     print(f"[plan] {len(plan)} cube(s); per-cube: grasp -> move_to -> release; then goto_home", flush=True)
 
-    for cube, x, y, z in plan:
-        _step(grasp, "Call the grasp skill with the named object.", f"Grasp the {cube}.", f"grasp {cube}")
-        _step(
-            move_to,
-            "Call the move_to skill with the given x, y, z coordinates.",
-            f"Move arm to ({x}, {y}, {z}).",
-            f"move_to ({x},{y},{z})",
-        )
-        _step(release, "Call the release skill.", "Release the gripper.", "release")
+    # Run the choreography on a worker thread so the main thread can
+    # pump the MuJoCo viewer continuously. Without this, pump_render
+    # only fires after all LLM hops complete -- the arm physically
+    # moves in the background but the viewer shows a frozen frame
+    # the whole time.
+    import time as _t
 
-    _step(goto_home, "Call the goto_home skill.", "Return to home pose.", "goto_home")
+    choreography_done = threading.Event()
+    choreography_error: list[Exception] = []
+
+    def _choreography_worker() -> None:
+        try:
+            for cube, x, y, z in plan:
+                _step(grasp, "Call the grasp skill with the named object.", f"Grasp the {cube}.", f"grasp {cube}")
+                _step(
+                    move_to,
+                    "Call the move_to skill with the given x, y, z coordinates.",
+                    f"Move arm to ({x}, {y}, {z}).",
+                    f"move_to ({x},{y},{z})",
+                )
+                _step(release, "Call the release skill.", "Release the gripper.", "release")
+            _step(goto_home, "Call the goto_home skill.", "Return to home pose.", "goto_home")
+        except Exception as e:
+            choreography_error.append(e)
+        finally:
+            choreography_done.set()
+
+    worker = threading.Thread(target=_choreography_worker, name="choreography", daemon=True)
+    worker.start()
+
+    if args.render:
+        # Pump the viewer at ~30 Hz while the worker runs. This is the
+        # critical change -- without main-thread pumping the viewer
+        # never refreshes during long LLM hops.
+        while not choreography_done.is_set():
+            world.pump_render()
+            _t.sleep(0.033)
+    else:
+        worker.join()
+
+    if choreography_error:
+        raise choreography_error[0]
 
     print()
     print("--- Final cube positions ---")
@@ -692,12 +728,10 @@ def _mujoco_llm_choreography(args: argparse.Namespace) -> int:
         print(f"  - {n}({a})")
 
     if args.render:
-        import time as _t
-
         print("\n[viewer] holding open for 8 s -- close the window or wait...")
-        for _ in range(80):
+        for _ in range(240):
             world.pump_render()
-            _t.sleep(0.1)
+            _t.sleep(0.033)
     return 0
 
 
