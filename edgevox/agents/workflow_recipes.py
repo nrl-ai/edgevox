@@ -1102,6 +1102,7 @@ class ReActAgent:
         max_completion_recheck_attempts: int = 3,
         instructions: str | None = None,
         completion_check: object | None = None,
+        completion_followup: str | None = None,
         auto_continue_on_promise: bool = True,
         name: str = "react",
     ) -> _ReActRunner:
@@ -1136,6 +1137,7 @@ class ReActAgent:
             max_completion_recheck_attempts=max_completion_recheck_attempts,
             instructions=instructions or _DEFAULT_REACT_INSTRUCTIONS,
             completion_check=completion_check,
+            completion_followup=completion_followup,
             auto_continue_on_promise=auto_continue_on_promise,
             promise_patterns=ReActAgent._PROMISE_PATTERNS,
         )
@@ -1155,6 +1157,7 @@ class _ReActRunner:
         max_completion_recheck_attempts: int,
         instructions: str,
         completion_check: object | None,
+        completion_followup: str | None = None,
         auto_continue_on_promise: bool = True,
         promise_patterns: tuple[str, ...] = (),
         hooks: list | None = None,
@@ -1164,6 +1167,7 @@ class _ReActRunner:
         self._max_iterations = max_iterations
         self._max_recheck = max_completion_recheck_attempts
         self._completion_check = completion_check
+        self._completion_followup = completion_followup
         self._auto_continue = auto_continue_on_promise
         self._promise_patterns = promise_patterns
         # The whole ReAct loop lives inside one LLMAgent's hop loop.
@@ -1243,14 +1247,20 @@ class _ReActRunner:
                 file=_sys.stderr,
                 flush=True,
             )
-            followup = (
-                f"Your last reply did not finish the task ({reason}). "
-                "Stop describing -- CALL the next tool now to make "
-                "actual progress. When EVERY step the user asked for "
-                "has been completed and you have tool results "
-                "confirming each one, end your reply with the literal "
-                f"line '{_TERMINATION_MARKER}: <one-sentence summary>'."
-            )
+            # Use the recipe's specific followup when supplied
+            # (e.g. robot_panda passes "you must call grasp now");
+            # otherwise the generic prod.
+            if self._completion_followup and self._completion_check is not None:
+                followup = self._completion_followup
+            else:
+                followup = (
+                    f"Your last reply did not finish the task ({reason}). "
+                    "Stop describing -- CALL the next tool now to make "
+                    "actual progress. When EVERY step the user asked for "
+                    "has been completed and you have tool results "
+                    "confirming each one, end your reply with the literal "
+                    f"line '{_TERMINATION_MARKER}: <one-sentence summary>'."
+                )
             result = self._inner.run(followup, ctx)
 
         return AgentResult(

@@ -261,7 +261,18 @@ def apply_dispatch_mode(
         skills=skills,
         hooks=terminal_trace_hooks(),
         max_iterations=20,
+        # Bumped from default 3 -> 8 so weak local models get more
+        # chances to course-correct after a hook-rejected call.
+        max_completion_recheck_attempts=8,
         completion_check=completion_check,
+        completion_followup=(
+            "STOP describing what's there. The task is NOT done. To "
+            "actually move a cube you MUST call grasp(object='<name>') "
+            "FIRST, then move_to_point(x, y, z), then release(). "
+            "Calling list_objects / locate_object does not satisfy a "
+            "'sort' / 'arrange' / 'move' request. Call grasp NOW with "
+            "the next cube name in the user's requested order."
+        ),
     )
 
 
