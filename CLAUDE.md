@@ -1,6 +1,6 @@
 # EdgeVox — Claude Code Rules
 
-Offline voice agent framework for robots. Pure-Python package, no cloud dependencies, runs on CPU/CUDA/Metal.
+Offline voice agent framework for robots and desktop apps. Pure-Python package, no cloud dependencies, runs on CPU/CUDA/Metal.
 
 ## Project layout
 
@@ -99,6 +99,118 @@ Avoid reaching into private modules or `_agent_harness.py` directly.
 - Latency budget: STT < 0.5 s, LLM first token < 0.4 s, TTS first chunk < 0.1 s on RTX 3080.
 - Treat the streaming pipeline as the contract: do not introduce blocking calls that hold the event loop.
 
+## Benchmark discipline — verified numbers only
+
+Every metric that appears in a user-facing surface — README, model card,
+website, blog post, talk slide, PR description — must come from a script
+in [`benchmarks/`](benchmarks/) that runs from a clean clone, OR a cited
+public source with a working URL. Disclaimers like "preliminary,"
+"internal estimate," or "indicative" do **not** rescue fabricated metrics
+— they create the appearance of data that doesn't exist. When numbers
+aren't available, leave the cell empty, write "TBD," or omit the table
+entirely. Empty is honest; fake is not.
+
+We have shipped fabricated numbers on this project once (the "~800 ms TTFT
+on Jetson Orin Nano" claim that was stripped April 2026 because no one
+had ever benched on Jetson). The rules below exist so that does not
+recur.
+
+### Methodology (the script existing isn't enough — the protocol must be sound)
+
+- **Throughput / latency:** warm up before timing (3+ calls), report
+  best-of-N (N≥3), state the protocol in the result. Cold-start
+  artefacts inflate ratios (a 135× claim that was actually ~21× because
+  the comparison target lazy-loaded a model is real, caught on a sister
+  project).
+- **Comparison targets:** pin and report the version of the third-party
+  tool (e.g. `faster-whisper==1.0.3`) and the bench date. Re-run when
+  bumping versions.
+- **Hardware fingerprint:** every result JSON records platform, Python
+  version, CPU, GPU (if any). Latency numbers without hardware context
+  are meaningless.
+- **Single-run results don't count.** They're noisy. Best-of-N or
+  median.
+- **Real corpora, not toy fixtures.** Quality benches use the actual
+  model output the user will encounter. Toy fixtures are for harness
+  validation only.
+
+### Sanity-check before claiming a number
+
+Three checks before any bench result goes into a doc, README, or commit
+message:
+
+- **Implausible-metric check.** 0 % or 100 % accuracy on a real model
+  is almost always a bench bug. Sub-second TTFT on a CPU-only laptop
+  with `whisper-large-v3-turbo` is suspect — investigate before claiming.
+- **Cross-reference upstream numbers.** If our number disagrees
+  materially with the model card / paper of the underlying component
+  (>10 % relative on the same metric), pause and investigate.
+- **Dump 5 raw samples.** If predictions look obviously wrong but the
+  metric looks fine, the metric is broken. Two minutes of `print(input,
+  output, gold)` saves a week of fallout from a wrong README number.
+
+## Docs stay in sync with results — every commit, not later
+
+When a result lands (new bench number, new shipped module, new gotcha
+caught), update the relevant docs in the **same commit** (or the next
+one) — never accumulate a backlog of "docs to refresh." A README with
+the previous-quarter status is a regression in the user-facing surface
+even when the code is fine.
+
+Minimum propagation matrix:
+
+| Trigger | Update in same commit |
+|---|---|
+| New bench number | `benchmarks/README.md` row, `README.md` table cell (or remove the TBD), `docs/documentation/<area>.md` if claimed there |
+| New supported language / TTS / STT backend | `README.md` languages table, `docs/documentation/index.md`, `CHANGELOG.md` |
+| New tool-call detector | `CLAUDE.md` § "Preset parsers", `docs/documentation/tool-calling.md` |
+| New ROS2 topic / service / action | `docs/documentation/ros2.md`, README ROS2 section |
+| Version bump | `pyproject.toml`, `CHANGELOG.md`, README status badge |
+
+Hard rule: **never claim a number in a doc that doesn't exist yet.**
+Order is always (a) measure, (b) update doc with the cited number;
+never the other way around. Speculative or "TBD" numbers in docs are
+the worst kind of documentation debt.
+
+## Citation block on every published artifact
+
+Every release note, blog post, talk slide, paper, or external write-up
+about EdgeVox lists **Viet-Anh Nguyen (`vietanh@nrl.ai`)** in its
+citation block, alongside any organisational attribution. The
+canonical form lives in `README.md` and is:
+
+```bibtex
+@software{edgevox2026,
+  author = {Nguyen, Viet-Anh and {Neural Research Lab}},
+  title  = {EdgeVox: on-device voice agents for robotics},
+  year   = {2026},
+  url    = {https://github.com/nrl-ai/edgevox},
+  note   = {MIT License}
+}
+```
+
+Format adapts per medium (paper authors list, slide footer, blog
+byline, etc.). Apply retroactively when patching old artifacts.
+
+## Model-file trust ladder
+
+EdgeVox bundles model weights from multiple sources (faster-whisper /
+CT2, Kokoro / Piper / Supertonic / PyThaiTTS for TTS, llama.cpp GGUF
+for LLM). Before pinning a new model in `setup_models.py` or any
+recipe, audit the weight format:
+
+| Format | Status | Why |
+|---|---|---|
+| `safetensors` | ✅ **always preferred** | Deterministic, zero code execution on load. |
+| GGUF (llama.cpp) | ✅ acceptable | Custom binary format, deterministic, no pickle path. The default LLM format. |
+| ONNX (Silero VAD, sherpa-onnx) | ✅ acceptable | Public spec, deterministic. |
+| HF `.bin` / `pytorch_model.bin` | ⚠️ acceptable from a major lab when no safetensors variant exists | Pickled, but audited at scale and downloaded with HF SHA256 from a known-trusted host. Prefer the safetensors revision when both exist. Document the choice in the wrapper docstring. |
+| `.pkl` / `.pickle` | ❌ **auto-reject regardless of source** | Same RCE surface as `.bin`, without HF checksum infrastructure or publisher accountability. |
+| Opaque native binaries (CRFsuite, custom) | ⚠️ acceptable when license + format are documented and the format spec is public | Deterministic but opaque. Prefer in-tree reimplementation for small models. |
+
+The license check (existing rule above) is necessary but not
+sufficient — file format is checked too.
+
 ## Tooling
 
 - **uv** for package management. Use `uv pip install` / `uv venv` instead of bare `pip` / `python -m venv`. See https://docs.astral.sh/uv/.
@@ -126,6 +238,7 @@ Avoid reaching into private modules or `_agent_harness.py` directly.
 ## What NOT to do
 
 - Don't add cloud API calls or telemetry. EdgeVox is offline-first.
+- **Don't reference this file in user-facing surfaces.** README, `docs/`, blog posts, model cards, talks, PR descriptions to external repos, CHANGELOG entries — none of these may cite "per CLAUDE.md §X" or link here. This file is an AI-operator instruction document; leaking it into user-facing surfaces leaks the instruction layer to readers who came for the software. When you need to invoke a policy from this file in a user-facing doc, restate the underlying policy in self-contained terms ("per our verified-benchmarks rule" instead of "per CLAUDE.md §benchmark-discipline").
 - Don't introduce GPL-licensed dependencies (project is MIT).
 - **License verification is mandatory before adding any new dependency.** Check the package's actual license (PyPI/GitHub/documentation — not just one guess) and record the result inline in ``pyproject.toml`` next to the dep (e.g. ``# MIT`` / ``# LGPL-3 — dynamic-linked, compatible``). Copyleft licenses to refuse: GPL-2/3, AGPL, SSPL. LGPL is acceptable only for pure dynamic-link libraries (PySide6, Qt Multimedia, rlottie). CC-BY-SA is acceptable for *assets* (SVG piece sets etc.), never for source-level dependencies. When in doubt, pick a permissive alternative or flag for discussion.
 - Don't commit `dist/`, `build/`, `*.egg-info/`, model weights, or recordings.
