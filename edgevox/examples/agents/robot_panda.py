@@ -47,29 +47,41 @@ PANDA_PERSONA = (
     "- goto_home() — retract the arm to the ready pose\n"
     "- list_objects() / locate_object(name) — read cube positions\n"
     "- get_gripper_state() / get_ee_pose() — read your own state\n\n"
-    "VOCABULARY MAPPING -- map user intents to ACTUAL physical actions:\n"
-    "- 'sort A, B, C' / 'arrange A, B, C' / 'reorder' / 'rearrange' / "
-    "'put in order' / 'organise' = physically MOVE each cube to its new "
-    "spot via grasp -> move_to_point -> release. Reading positions is "
-    "NOT sorting; you must physically pick each cube up and move it.\n"
-    "- 'pick up X' = grasp(X) followed by move_to_point above the table.\n"
-    "- 'put X at (x,y,z)' / 'place X at...' = (assuming holding X) "
-    "move_to_point + release.\n"
-    "- 'swap X and Y' = move X to a temp spot, move Y to X's spot, "
-    "move X to Y's spot.\n\n"
+    "PHYSICAL ACTION ORDER (critical -- do not break this order):\n"
+    "    grasp(cube)  ->  move_to_point(x, y, z)  ->  release()\n"
+    "Calling move_to_point WITHOUT a prior grasp moves only the empty\n"
+    "gripper. The cube STAYS where it was. To move a cube you MUST\n"
+    "grasp it first. After release(), call goto_home() to retract.\n\n"
+    "VOCABULARY MAPPING -- map user intents to physical action chains:\n"
+    "- 'sort A, B, C' / 'arrange in order' / 'reorder' / 'rearrange' /\n"
+    "  'put in order' = for EACH cube in the requested order:\n"
+    "      grasp(cube) -> move_to_point(slot_x, slot_y, slot_z) ->\n"
+    "      release(). After all cubes: goto_home().\n"
+    "- 'pick up X' = grasp(X). That's one tool call.\n"
+    "- 'put X at (x,y,z)' (assuming you already grasped X) =\n"
+    "      move_to_point(x, y, z) -> release().\n"
+    "- 'swap X and Y' = move X to a temp spot, then Y to X's spot,\n"
+    "  then X to Y's spot.\n\n"
+    "WORKED EXAMPLE -- 'sort cubes blue, red, green' (left-to-right at y=0):\n"
+    "  grasp(blue_cube)\n"
+    "  move_to_point(0.5, 0.30, 0.50)\n"
+    "  release()\n"
+    "  grasp(red_cube)\n"
+    "  move_to_point(0.5, 0.00, 0.50)\n"
+    "  release()\n"
+    "  grasp(green_cube)\n"
+    "  move_to_point(0.5, -0.30, 0.50)\n"
+    "  release()\n"
+    "  goto_home()\n"
+    "  TASK COMPLETE: sorted blue, red, green left-to-right.\n\n"
     "RULES:\n"
-    "1. CALL ONE TOOL PER RESPONSE. After your tool returns, I will send "
-    "you the result and you can call the next one. Do NOT batch tool "
-    "calls; do NOT claim a multi-step plan is done before each step has "
-    "actually returned.\n"
-    "2. To MOVE an object: grasp(object) -> move_to_point(x, y, z) -> "
-    "release() -> goto_home(). Each step is a separate response.\n"
-    "3. list_objects / locate_object / get_gripper_state / get_ee_pose "
-    "are DIAGNOSTIC only -- they don't satisfy a 'sort' / 'arrange' / "
-    "'move' request. You MUST follow with actual action calls.\n"
-    "4. If a tool returns an error, report it and stop. Do not retry "
-    "blindly.\n\n"
-    "Never read raw JSON aloud; keep replies one short sentence."
+    "1. CALL ONE TOOL PER RESPONSE. After your tool returns, I will send\n"
+    "you the result and you can call the next one.\n"
+    "2. list_objects / locate_object / get_gripper_state / get_ee_pose\n"
+    "are DIAGNOSTIC only. They don't satisfy a 'sort'/'arrange'/'move'\n"
+    "request. You MUST follow them with grasp/move/release.\n"
+    "3. If a tool returns an error, report it and stop -- don't retry.\n"
+    "4. Never read raw JSON aloud; keep replies short.\n"
 )
 
 _HOVER_CLEARANCE_M = 0.05
@@ -173,8 +185,14 @@ def get_gripper_state(ctx: AgentContext) -> dict[str, Any]:
     return {"holding": held, "open": held is None}
 
 
+_PHYSICAL_TOOLS = frozenset({"grasp", "move_to_point", "move_above_object", "release", "goto_home"})
+
+
 def _pre_run(args: argparse.Namespace) -> None:
-    from edgevox.examples.agents.framework import apply_dispatch_mode
+    from edgevox.examples.agents.framework import (
+        apply_dispatch_mode,
+        physical_action_check,
+    )
     from edgevox.integrations.sim.mujoco_arm import MujocoArmEnvironment
 
     source = "gantry" if getattr(args, "gantry", False) else "franka"
@@ -182,8 +200,39 @@ def _pre_run(args: argparse.Namespace) -> None:
         model_source=source,
         render=not getattr(args, "no_render", False),
     )
-    # Default: ReAct loop. Override with --legacy or --planned.
-    apply_dispatch_mode(APP, args)
+
+    # Track every tool/skill call so the recheck loop can refuse to
+    # accept TASK COMPLETE on a physical-action request when the
+    # model has only fired diagnostics. The hook updates this list;
+    # the predicate reads it.
+    physical_log: list[tuple[str, dict]] = []
+    APP._physical_log = physical_log  # type: ignore[attr-defined]
+
+    completion_check = physical_action_check(physical_log, _PHYSICAL_TOOLS)
+
+    # Default: ReAct loop with physical-action backstop. Override with
+    # --legacy or --planned.
+    apply_dispatch_mode(APP, args, completion_check=completion_check)
+
+    # Wire an after_tool hook to the resulting agent so we record
+    # every tool/skill that fires. ReAct mode wired the trace hooks
+    # already; this APPENDS our recorder.
+    inner = getattr(APP.agent, "_inner", None)
+    if inner is not None:
+        import contextlib as _contextlib
+
+        from edgevox.agents.hooks import AFTER_TOOL, hook
+
+        @hook(AFTER_TOOL)
+        def _record(point, ctx, payload):
+            if hasattr(payload, "name"):
+                physical_log.append((payload.name, getattr(payload, "arguments", {})))
+                return None
+            with _contextlib.suppress(AttributeError):
+                physical_log.append((payload.get("name", "?"), payload.get("arguments", {})))
+            return None
+
+        inner._hooks.register(_record)
 
 
 APP = AgentApp(

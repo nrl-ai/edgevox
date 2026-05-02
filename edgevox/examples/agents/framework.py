@@ -161,6 +161,7 @@ def apply_dispatch_mode(
     tools: Any = None,
     skills: Any = None,
     default_mode: str = "react",
+    completion_check: Any = None,
 ) -> None:
     """Swap ``app.agent`` based on argparse flags.
 
@@ -230,6 +231,7 @@ def apply_dispatch_mode(
         skills=skills,
         hooks=terminal_trace_hooks(),
         max_iterations=20,
+        completion_check=completion_check,
     )
 
 
