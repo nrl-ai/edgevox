@@ -1001,26 +1001,39 @@ PROCESS (repeat until the user's task is truly complete):
 1. THINK: read the current state and the most recent tool result.
    Decide what ONE action moves you closer to completion.
 2. ACT: call exactly ONE tool with the right arguments. Do not call
-   multiple tools in one response.
+   multiple tools in one response. Do not stop after one call --
+   most user requests need many tool calls.
 3. OBSERVE: the framework will give you the tool's result on the
    next turn. Use it to decide your next action.
 
-TERMINATION:
-- Only stop calling tools when the task is GENUINELY complete -- every
-  user-requested step has actually executed and you have evidence
-  (from tool results) that it succeeded.
-- When you stop, emit ONE short plain-text sentence summarising
-  what happened. No more tool calls after that.
-- Do NOT claim "done" prematurely. If the user asked for three things
-  and only one has been done, you are NOT done -- call the next tool.
+TERMINATION (read carefully -- this is the only way to stop):
 
-ANTI-PATTERNS TO AVOID:
-- Hallucinated completion: claiming you called a tool you did not call.
-- Single-tool stop: firing one tool and declaring victory. Most user
-  requests need 3+ tool calls.
-- Looping the same tool: if you call the same tool twice with the same
-  args and got the same error, change strategy.
+You stop ONLY when the user's task is GENUINELY done. To stop, emit
+exactly this on the last line of your reply:
+
+    TASK COMPLETE: <one-sentence summary>
+
+Any reply that does NOT contain the literal string 'TASK COMPLETE'
+will be treated as 'continue working' and you'll be asked to call
+another tool. Do not emit 'TASK COMPLETE' until every step the user
+asked for has actually been executed by calling a tool and you have
+seen the tool's result confirming it.
+
+If you genuinely don't know what to do next, call the most relevant
+read-only tool (list_objects, get_pose, get_gripper_state, etc.) to
+gather information, then continue.
+
+ANTI-PATTERNS:
+- "Here are the positions." -> not done; continue with next action.
+- "I will now move the cube." -> describing isn't doing; CALL the
+  move tool now, don't just plan it.
+- Calling one tool then summarising -> usually wrong. The task isn't
+  done after one call unless the user asked for one thing.
+- Looping the same tool with the same args -> if it errored once,
+  change strategy.
 """
+
+_TERMINATION_MARKER = "TASK COMPLETE"
 
 
 class ReActAgent:
@@ -1171,38 +1184,59 @@ class _ReActRunner:
         if self._inner.llm is None:
             self._inner.bind_llm(llm)  # type: ignore[arg-type]
 
+    def _is_promise(self, reply: str) -> bool:
+        """Return True if the reply *promises* a future action rather
+        than reporting completion. Heuristic catch for replies that
+        slip past the termination-marker check ('TASK COMPLETE: I
+        will now move...')."""
+        if not reply:
+            return False
+        low = reply.lower()
+        return any(p in low for p in self._promise_patterns)
+
     def run(self, task: str, ctx: object | None = None):
         from edgevox.agents.base import AgentContext, AgentResult
 
         ctx = ctx or AgentContext()
         result = self._inner.run(task, ctx)
 
-        # Optional completion-check: if the model declared done but
-        # the predicate says the task isn't actually finished, prod
-        # the agent to keep going for one more round.
-        if self._completion_check is not None:
-            attempts = 0
-            while attempts < self._max_recheck:
+        # Re-prompt loop. Termination requires either:
+        #   - explicit completion_check predicate returning True, OR
+        #   - the model emitting the literal TASK COMPLETE marker
+        # Anything else is treated as 'keep working' for up to
+        # max_completion_recheck_attempts.
+        for _ in range(self._max_recheck):
+            should_continue = False
+            reason = ""
+
+            if self._completion_check is not None:
                 try:
                     done = bool(self._completion_check(ctx))
                 except Exception:
                     done = False
-                if done:
-                    break
-                attempts += 1
-                # Re-prompt -- LLMAgent maintains its own conversation
-                # history, so the "not done yet" message lands as a
-                # fresh user turn that the model has to act on.
-                followup = (
-                    "Your last reply suggested completion, but the task "
-                    "is NOT yet done -- review the tool results so far "
-                    "and continue calling tools until everything the "
-                    "user asked for has actually been executed."
-                )
-                result = self._inner.run(followup, ctx)
+                if not done:
+                    should_continue = True
+                    reason = "completion_check returned False"
             else:
-                # Loop exited without breaking -- budget exhausted.
-                pass
+                if _TERMINATION_MARKER not in (result.reply or "").upper():
+                    should_continue = True
+                    reason = f"reply did not contain the {_TERMINATION_MARKER!r} marker"
+                elif self._auto_continue and self._is_promise(result.reply):
+                    should_continue = True
+                    reason = "promise language detected after marker"
+
+            if not should_continue:
+                break
+
+            followup = (
+                f"Your last reply did not finish the task ({reason}). "
+                "Stop describing -- CALL the next tool now to make "
+                "actual progress. When EVERY step the user asked for "
+                "has been completed and you have tool results "
+                "confirming each one, end your reply with the literal "
+                f"line '{_TERMINATION_MARKER}: <one-sentence summary>'."
+            )
+            result = self._inner.run(followup, ctx)
 
         return AgentResult(
             reply=result.reply,

@@ -77,8 +77,8 @@ class TestReActAgent:
                 call("set_light", room="kitchen", on=True),
                 # Hop 3: turn on living_room.
                 call("set_light", room="living_room", on=True),
-                # Hop 4: stop with summary.
-                reply("Listed rooms; kitchen and living_room lights are now on."),
+                # Hop 4: stop with summary including the termination marker.
+                reply("TASK COMPLETE: listed rooms and turned on the kitchen + living_room lights."),
             ]
         )
         agent = ReActAgent.build(
@@ -150,7 +150,7 @@ class TestReActAgent:
         scripted = ScriptedLLM(
             [
                 call("set_light", room="kitchen", on=True),
-                reply("Kitchen is on."),
+                reply("TASK COMPLETE: kitchen light is on."),
             ]
         )
 
@@ -176,7 +176,7 @@ class TestReActAgent:
         scripted = ScriptedLLM(
             [
                 call("navigate_to", room="kitchen"),
-                reply("Heading to the kitchen."),
+                reply("TASK COMPLETE: heading to the kitchen."),
             ]
         )
         agent = ReActAgent.build(
@@ -206,7 +206,7 @@ class TestReActAgent:
                     ("set_light", {"room": "kitchen", "on": True}),
                     ("set_light", {"room": "living_room", "on": True}),
                 ),
-                reply("Both lights are on."),
+                reply("TASK COMPLETE: both lights are on."),
             ]
         )
         agent = ReActAgent.build(
@@ -220,9 +220,12 @@ class TestReActAgent:
         assert rooms_lit == {"kitchen", "living_room"}
 
     def test_max_iterations_bounds_runaway_loop(self, world_and_actions):
-        """A model that never stops emitting tool calls hits the cap."""
+        """A model that never emits the termination marker is bounded
+        by max_iterations * (max_completion_recheck_attempts + 1).
+        With max_iterations=3 and max_recheck=0, only 3 tool calls fire."""
         bundle = world_and_actions
-        # 30 calls scripted, way more than max_iterations=3.
+        # Script enough calls that the budget would be exceeded if
+        # unbounded.
         many = []
         for _ in range(30):
             many.append(call("list_rooms"))
@@ -231,6 +234,7 @@ class TestReActAgent:
             llm=scripted,
             tools=bundle["tools"],
             max_iterations=3,
+            max_completion_recheck_attempts=0,  # disable re-prompt for clean bound
         )
         agent.run("loop forever")
 
