@@ -1096,6 +1096,7 @@ class ReActAgent:
         llm: object | None = None,
         tools: list | None = None,
         skills: list | None = None,
+        hooks: list | None = None,
         max_iterations: int = 20,
         max_completion_recheck_attempts: int = 3,
         instructions: str | None = None,
@@ -1129,6 +1130,7 @@ class ReActAgent:
             llm=llm,
             tools=tools or [],
             skills=skills or [],
+            hooks=hooks,
             max_iterations=max_iterations,
             max_completion_recheck_attempts=max_completion_recheck_attempts,
             instructions=instructions or _DEFAULT_REACT_INSTRUCTIONS,
@@ -1154,6 +1156,7 @@ class _ReActRunner:
         completion_check: object | None,
         auto_continue_on_promise: bool = True,
         promise_patterns: tuple[str, ...] = (),
+        hooks: list | None = None,
     ) -> None:
         self.name = name
         self.description = f"ReActAgent({len(tools)} tools, {len(skills)} skills)"
@@ -1171,6 +1174,7 @@ class _ReActRunner:
             instructions=instructions,
             tools=tools,
             skills=skills,
+            hooks=hooks,
             llm=llm,  # type: ignore[arg-type]
             max_tool_hops=max_iterations,
         )
@@ -1228,6 +1232,16 @@ class _ReActRunner:
             if not should_continue:
                 break
 
+            # Visible signal so the operator sees the re-prompt firing
+            # in --text-mode. Goes to stderr to stay out of structured
+            # stdout.
+            import sys as _sys
+
+            print(
+                f"  ◆ react-recheck: re-prompting ({reason})",
+                file=_sys.stderr,
+                flush=True,
+            )
             followup = (
                 f"Your last reply did not finish the task ({reason}). "
                 "Stop describing -- CALL the next tool now to make "

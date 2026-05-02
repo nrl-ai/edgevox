@@ -213,12 +213,14 @@ def _pre_run(args: argparse.Namespace) -> None:
         # closest", "is the gripper holding anything", "did the grasp
         # succeed"). PlannedToolDispatcher is faster for upfront-
         # determinable plans and is available via --planned.
+        from edgevox.agents.trace_hooks import terminal_trace_hooks
         from edgevox.agents.workflow_recipes import ReActAgent
 
         APP.agent = ReActAgent.build(
             llm=None,
             tools=common_tools,
             skills=common_skills,
+            hooks=terminal_trace_hooks(),
             max_iterations=20,
         )
 
