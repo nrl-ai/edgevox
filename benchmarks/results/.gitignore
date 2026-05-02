@@ -1,0 +1,4 @@
+# Ad-hoc bench runs are local-only — only baselines are committed.
+run-*.json
+run.json
+*.local.json

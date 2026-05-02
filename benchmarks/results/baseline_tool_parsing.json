@@ -1,0 +1,56 @@
+{
+  "bench": "tool_parsing",
+  "generated": "2026-05-02T09:47:05+0700",
+  "runs": 5,
+  "ops_per_run": 1000,
+  "hardware": {
+    "python": "3.13.9",
+    "platform": "Linux-7.0.0-14-generic-x86_64-with-glibc2.43",
+    "machine": "x86_64",
+    "processor": "unknown"
+  },
+  "results": {
+    "hermes": {
+      "best_total_s": 0.019519868976203725,
+      "ops_per_s": 51229.852066070714,
+      "us_per_op": 19.519868976203725,
+      "calls_returned": 2
+    },
+    "qwen25": {
+      "best_total_s": 0.022102888993686065,
+      "ops_per_s": 45242.954452047474,
+      "us_per_op": 22.102888993686065,
+      "calls_returned": 2
+    },
+    "llama32": {
+      "best_total_s": 0.018076057982398197,
+      "ops_per_s": 55321.796432262134,
+      "us_per_op": 18.076057982398197,
+      "calls_returned": 2
+    },
+    "mistral": {
+      "best_total_s": 0.025293996994150802,
+      "ops_per_s": 39535.0723031733,
+      "us_per_op": 25.293996994150802,
+      "calls_returned": 2
+    },
+    "pythonic": {
+      "best_total_s": 0.12356668899883516,
+      "ops_per_s": 8092.7959476961205,
+      "us_per_op": 123.56668899883518,
+      "calls_returned": 2
+    },
+    "xlam": {
+      "best_total_s": 0.02092038799310103,
+      "ops_per_s": 47800.26069926488,
+      "us_per_op": 20.92038799310103,
+      "calls_returned": 2
+    },
+    "granite": {
+      "best_total_s": 0.02217158698476851,
+      "ops_per_s": 45102.77052729615,
+      "us_per_op": 22.17158698476851,
+      "calls_returned": 2
+    }
+  }
+}
