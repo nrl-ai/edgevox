@@ -4,19 +4,22 @@ This is the Tier-2a simulation demo: a Franka Emika Panda (or the
 bundled XYZ gantry fallback) drives a 3D arm to pick, move, and place
 coloured cubes on a table in a MuJoCo viewer window.
 
-The agent uses :class:`~edgevox.agents.workflow_recipes.PlannedToolDispatcher`
-by default (planner emits a JSON plan, Python loop direct-dispatches
-each step, synthesiser writes the user-facing reply). Pass ``--legacy``
-to fall back to the single-LLMAgent dispatch -- useful for benchmarking
-the chain-handling difference but expect sycophancy on weak local models.
+The agent uses :class:`~edgevox.agents.workflow_recipes.ReActAgent`
+by default (think -> act -> observe loop, adapts to tool results,
+naturally multi-step). Pass ``--planned`` for the upfront-plan
+:class:`PlannedToolDispatcher` recipe (faster for known-shape tasks
+but doesn't adapt). ``--legacy`` falls back to the single-LLMAgent
+dispatch -- useful for benchmarking the chain-handling difference
+but expect sycophancy on weak local models.
 
 Launch:
 
-    edgevox-agent robot-panda                 # full TUI voice (default)
+    edgevox-agent robot-panda                 # full TUI voice (default ReAct)
     edgevox-agent robot-panda --simple-ui     # lightweight CLI voice
     edgevox-agent robot-panda --text-mode     # keyboard chat + MuJoCo viewer
     edgevox-agent robot-panda --no-render     # headless, tests only
     edgevox-agent robot-panda --gantry        # force the bundled gantry fallback
+    edgevox-agent robot-panda --planned       # PlannedToolDispatcher (upfront plan)
     edgevox-agent robot-panda --legacy        # single-LLMAgent (no planner/synth)
 
 Requires ``pip install 'edgevox[sim-mujoco]'`` (or ``pip install 'mujoco>=3.2'``).
@@ -193,16 +196,7 @@ def _pre_run(args: argparse.Namespace) -> None:
         # Keep the auto-built single-LLMAgent that AgentApp.__post_init__
         # already wired -- nothing to do here.
         pass
-    elif getattr(args, "react", False):
-        from edgevox.agents.workflow_recipes import ReActAgent
-
-        APP.agent = ReActAgent.build(
-            llm=None,
-            tools=common_tools,
-            skills=common_skills,
-            max_iterations=20,
-        )
-    else:
+    elif getattr(args, "planned", False):
         from edgevox.agents.workflow_recipes import PlannedToolDispatcher
 
         APP.agent = PlannedToolDispatcher.build(
@@ -211,6 +205,21 @@ def _pre_run(args: argparse.Namespace) -> None:
             tools=common_tools,
             skills=common_skills,
             max_steps=10,
+        )
+    else:
+        # Default: ReAct loop. Adapts to tool results, naturally
+        # multi-step, the right shape for free-form voice input where
+        # the agent has to discover state mid-flight ("which cube is
+        # closest", "is the gripper holding anything", "did the grasp
+        # succeed"). PlannedToolDispatcher is faster for upfront-
+        # determinable plans and is available via --planned.
+        from edgevox.agents.workflow_recipes import ReActAgent
+
+        APP.agent = ReActAgent.build(
+            llm=None,
+            tools=common_tools,
+            skills=common_skills,
+            max_iterations=20,
         )
 
 
@@ -250,14 +259,17 @@ APP = AgentApp(
             },
         ),
         (
-            ("--react",),
+            ("--planned",),
             {
                 "action": "store_true",
                 "help": (
-                    "Use the ReActAgent loop (think -> act -> observe -> "
-                    "repeat) instead of the default PlannedToolDispatcher. "
-                    "Right when next action depends on previous tool "
-                    "result -- search, exploration, recovery."
+                    "Use the PlannedToolDispatcher recipe (planner emits "
+                    "JSON plan up-front, Python loop direct-dispatches "
+                    "each step, synthesiser writes reply) instead of the "
+                    "default ReAct loop. Faster for tasks where the plan "
+                    "is determinable from the user request -- pick + "
+                    "place + release sequences with known coordinates. "
+                    "Doesn't adapt to tool results."
                 ),
             },
         ),
