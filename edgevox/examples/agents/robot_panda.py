@@ -185,7 +185,11 @@ def get_gripper_state(ctx: AgentContext) -> dict[str, Any]:
     return {"holding": held, "open": held is None}
 
 
-_PHYSICAL_TOOLS = frozenset({"grasp", "move_to_point", "move_above_object", "release", "goto_home"})
+# For the completion-check backstop: require ``grasp`` to have fired
+# before accepting termination. ``move_to_point`` alone moves only the
+# empty gripper -- the cube stays put. ``grasp`` is the gating action
+# that proves the agent actually engaged with a cube.
+_GATING_PHYSICAL_TOOLS = frozenset({"grasp"})
 
 
 def _pre_run(args: argparse.Namespace) -> None:
@@ -208,7 +212,7 @@ def _pre_run(args: argparse.Namespace) -> None:
     physical_log: list[tuple[str, dict]] = []
     APP._physical_log = physical_log  # type: ignore[attr-defined]
 
-    completion_check = physical_action_check(physical_log, _PHYSICAL_TOOLS)
+    completion_check = physical_action_check(physical_log, _GATING_PHYSICAL_TOOLS)
 
     # Default: ReAct loop with physical-action backstop. Override with
     # --legacy or --planned.
@@ -221,7 +225,7 @@ def _pre_run(args: argparse.Namespace) -> None:
     if inner is not None:
         import contextlib as _contextlib
 
-        from edgevox.agents.hooks import AFTER_TOOL, hook
+        from edgevox.agents.hooks import AFTER_TOOL, BEFORE_TOOL, HookResult, hook
 
         @hook(AFTER_TOOL)
         def _record(point, ctx, payload):
@@ -232,7 +236,33 @@ def _pre_run(args: argparse.Namespace) -> None:
                 physical_log.append((payload.get("name", "?"), payload.get("arguments", {})))
             return None
 
+        @hook(BEFORE_TOOL, priority=80)
+        def _reject_move_without_grasp(point, ctx, request):
+            """Refuse ``move_to_point`` calls when no ``grasp`` has fired yet.
+
+            Without this, weak models satisfy the loose 'physical
+            action' predicate by moving the empty gripper -- the cube
+            stays where it was and the user thinks the sort failed.
+            By rejecting the move and feeding the error back to the
+            LLM as a tool-call result, the model learns it has to
+            grasp first.
+            """
+            name = getattr(request, "name", None) or getattr(request, "tool_name", None)
+            if name in {"move_to_point", "move_above_object"}:
+                grasped_recently = any(n == "grasp" for n, _ in physical_log)
+                if not grasped_recently:
+                    request.skip_dispatch = True
+                    request.synthetic_result = (
+                        "ERROR: cannot move_to_point without first calling "
+                        "grasp(object). Moving the empty gripper does not "
+                        "move any cube. Call grasp(object='<cube_name>') "
+                        "first, then move."
+                    )
+                    return HookResult.replace(request, reason="move-without-grasp gate")
+            return None
+
         inner._hooks.register(_record)
+        inner._hooks.register(_reject_move_without_grasp)
 
 
 APP = AgentApp(
