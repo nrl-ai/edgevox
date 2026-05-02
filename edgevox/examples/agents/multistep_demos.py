@@ -242,12 +242,10 @@ def _mujoco_pick_red(args: argparse.Namespace) -> int:
     from edgevox.agents.skills import skill
     from edgevox.integrations.sim.mujoco_arm import MujocoArmEnvironment
 
-    print("[demo] loading MuJoCo gantry scene (headless)...", file=sys.stderr)
-    world = MujocoArmEnvironment(
-        model_source="gantry",
-        render=False,
-        allow_hf_download=False,
-    )
+    print("[demo] loading MuJoCo Franka scene (headless)...", file=sys.stderr)
+    # Use Franka (the real model) instead of gantry: gantry has a physics
+    # bug that rockets cubes on arm contact (verified May 2026).
+    world = MujocoArmEnvironment(model_source="franka", render=False)
 
     events: list[tuple[str, dict]] = []
 
@@ -402,8 +400,11 @@ def _mujoco_pick_and_place(args: argparse.Namespace) -> int:
     from edgevox.agents.skills import skill
     from edgevox.integrations.sim.mujoco_arm import MujocoArmEnvironment
 
-    print("[demo] loading MuJoCo gantry scene (headless)...", file=sys.stderr)
-    world = MujocoArmEnvironment(model_source="gantry", render=False, allow_hf_download=False)
+    print("[demo] loading MuJoCo Franka scene (headless)...", file=sys.stderr)
+    # Franka grasps cleanly. The gantry model has a physics bug where the
+    # actuators rocket the cube on contact (verified May 2026). Until the
+    # gantry is fixed, real demos run on Franka.
+    world = MujocoArmEnvironment(model_source="franka", render=False)
     events: list[tuple[str, dict]] = []
 
     @tool
