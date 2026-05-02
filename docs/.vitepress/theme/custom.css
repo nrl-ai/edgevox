@@ -94,7 +94,7 @@ body {
 
 /* Stat strip under the actions */
 .VPHero .main::after {
-  content: "16 LANGUAGES   ·   56 VOICES   ·   ~0.8s FIRST AUDIO   ·   CPU / CUDA / METAL";
+  content: "16 LANGUAGES   ·   56 VOICES   ·   STREAMING PIPELINE   ·   CPU / CUDA / METAL";
   display: block;
   margin-top: 32px;
   padding-top: 18px;

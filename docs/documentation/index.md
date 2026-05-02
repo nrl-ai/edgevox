@@ -1,6 +1,6 @@
 # Introduction
 
-EdgeVox is an **offline voice agent framework for robots** — agents, skills, workflows, and a sub-second voice pipeline, all running locally on CPU / CUDA / Metal with no cloud dependencies.
+EdgeVox is an **offline voice agent framework for robots** — agents, skills, workflows, and a streaming voice pipeline (sub-second target on consumer GPUs), all running locally on CPU / CUDA / Metal with no cloud dependencies.
 
 ![EdgeVox TUI Screenshot](/screenshot.png)
 
@@ -9,13 +9,13 @@ EdgeVox is an **offline voice agent framework for robots** — agents, skills, w
 EdgeVox combines two things:
 
 1. **An agent framework** — `@tool` and `@skill` decorators, `LLMAgent` with handoffs, behavior-tree workflows (`Sequence`, `Fallback`, `Loop`, `Parallel`, `Router`, `Supervisor`, `Orchestrator`, `Retry`, `Timeout`), cancellable skills with `GoalHandle`, and a `SafetyMonitor` that preempts before the LLM is consulted.
-2. **A streaming voice pipeline** — Mic → VAD → STT → LLM → TTS → Speaker, delivering first audio in ~0.8 s. The pipeline is the substrate that agents run on top of.
+2. **A streaming voice pipeline** — Mic → VAD → STT → LLM → TTS → Speaker. Designed for sub-second first-audio on consumer GPUs (target — measured perf is published in [`benchmarks/`](https://github.com/nrl-ai/edgevox/tree/main/benchmarks) once a run lands). The pipeline is the substrate that agents run on top of.
 
 Agent code is sim-agnostic: the same Python works on `ToyWorld` (stdlib), `IrSimEnvironment` (2D navigation), `MujocoArmEnvironment` (3D pick-and-place), `MujocoHumanoidEnvironment` (Unitree G1 / H1), and `ExternalROS2Environment` (any Gazebo / Isaac / real robot over ROS2).
 
 ## Key design principles
 
-- **Voice is the interface** — sub-second streaming pipeline on an RTX 3080, runs on a Jetson Orin Nano, CPU fallback on a laptop
+- **Voice is the interface** — sub-second streaming pipeline (design target on consumer GPUs), Jetson and CPU fallback paths
 - **Agents are the program model** — write `@tool` and `@skill` functions; compose with workflows; delegate across agents with handoffs
 - **Robots are the target** — cancellable skills, safety monitor, three simulation tiers, ROS2 bridge
 - **Everything is offline** — no cloud APIs, no telemetry, no vendor lock-in

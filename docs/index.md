@@ -68,7 +68,7 @@ hero:
       <svg class="ev-icon ev-icon-lg" viewBox="0 0 24 24"><path d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/></svg>
     </div>
     <h3>Voice pipeline.</h3>
-    <p>Streaming STT → LLM → TTS in ~0.8 s on RTX 3080. 16 languages, 56 voices, four TTS backends (Kokoro · Piper · Supertonic · PyThaiTTS). VAD barge-in halts mid-phrase.</p>
+    <p>Streaming STT → LLM → TTS, sub-second target on consumer GPUs. 16 languages, 56 voices, four TTS backends (Kokoro · Piper · Supertonic · PyThaiTTS). VAD barge-in halts mid-phrase.</p>
     <a class="ev-corner-link" href="/documentation/pipeline">voice pipeline</a>
   </div>
 
@@ -176,7 +176,7 @@ Any `edgevox-agent` invocation composes with `--ros2` to publish `/edgevox/robot
   <div class="ev-principle">
     <div class="num">05</div>
     <div class="title">Safety preempts the LLM.</div>
-    <div class="body">SafetyMonitor halts skills in ~200 ms before the LLM is consulted. The reactive layer is deterministic; the LLM never enters it.</div>
+    <div class="body">SafetyMonitor halts skills <em>before</em> the LLM is consulted — stop-words land in the reactive layer, the halt path doesn't wait on a model round-trip.</div>
   </div>
   <div class="ev-principle">
     <div class="num">06</div>

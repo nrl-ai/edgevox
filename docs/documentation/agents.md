@@ -386,7 +386,7 @@ on its next physics tick`"]
     class D,B sys
 ```
 
-The LLM never runs on the critical stop path. Stop-words land in a hardcoded set inside `SafetyMonitor`, propagate as a `StopFrame`, flip `ctx.stop`, and the skill dispatcher preempts in-flight goals. Total wall-clock: ~200 ms.
+The LLM never runs on the critical stop path. Stop-words land in a hardcoded set inside `SafetyMonitor`, propagate as a `StopFrame`, flip `ctx.stop`, and the skill dispatcher preempts in-flight goals — the halt path is bounded by VAD frame size + skill-poll interval, not by LLM round-trip.
 
 ## Workflows — behavior-tree-shaped composition
 

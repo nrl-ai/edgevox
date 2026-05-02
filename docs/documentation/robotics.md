@@ -31,7 +31,7 @@ edgevox-setup
 edgevox-agent robot-irsim --text-mode
 ```
 
-A matplotlib window opens showing a 10×10 m apartment with four rooms. Type `"go to the kitchen"` and the blue robot drives visibly to the kitchen centroid. Type `"stop"` mid-flight and the skill preempts in ~200 ms — the `SafetyMonitor` intercepts stop-words before the LLM is consulted, so the halt doesn't wait on a model round-trip.
+A matplotlib window opens showing a 10×10 m apartment with four rooms. Type `"go to the kitchen"` and the blue robot drives visibly to the kitchen centroid. Type `"stop"` mid-flight and the skill preempts — the `SafetyMonitor` intercepts stop-words *before the LLM is consulted*, so the halt path doesn't wait on a model round-trip.
 
 ![EdgeVox TUI driving a voice agent](/screenshot.png)
 

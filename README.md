@@ -1,7 +1,7 @@
 # EdgeVox
 
-**Offline voice agent framework for robots.**
-**Sub-second local voice pipeline. Fully private.**
+**Offline voice agent framework for robots and desktop apps.**
+**Local streaming voice pipeline. Fully private.**
 
 [![PyPI version](https://img.shields.io/pypi/v/edgevox.svg?color=4c1)](https://pypi.org/project/edgevox/)
 [![Python versions](https://img.shields.io/pypi/pyversions/edgevox.svg)](https://pypi.org/project/edgevox/)
@@ -39,15 +39,15 @@
 
 ---
 
-**Agents + Skills + Workflows** &nbsp;|&nbsp; **2D sim (IR-SIM)** &nbsp;|&nbsp; **3D sim (MuJoCo)** &nbsp;|&nbsp; **0.8s voice TTFT** &nbsp;|&nbsp; **16 languages** &nbsp;|&nbsp; **56 voices** &nbsp;|&nbsp; **ROS2-native** &nbsp;|&nbsp; **Ships as a desktop app**
+**Agents + Skills + Workflows** &nbsp;|&nbsp; **2D sim (IR-SIM)** &nbsp;|&nbsp; **3D sim (MuJoCo)** &nbsp;|&nbsp; **Streaming voice pipeline** &nbsp;|&nbsp; **16 languages** &nbsp;|&nbsp; **56 voices** &nbsp;|&nbsp; **ROS2-native** &nbsp;|&nbsp; **Ships as a desktop app**
 
 ---
 
 ## Why EdgeVox?
 
-- **Voice is the interface** — streaming STT → LLM → TTS pipeline hits first audio in ~0.8 s on an RTX 3080, runs on a Jetson Orin Nano, CPU fallback on a laptop.
+- **Voice is the interface** — streaming STT → LLM → TTS pipeline targeting sub-second first-audio on consumer GPUs, with Jetson and CPU fallback paths. (No measured perf published yet — see [`benchmarks/`](benchmarks/) for the harness; numbers land here once the first run completes.)
 - **Agents are the program model** — write `@tool` and `@skill` functions in Python; compose them with `Sequence`, `Fallback`, `Loop`, `Parallel`, and `Router` workflows; delegate across agents with OpenAI-SDK-style handoffs.
-- **Robots are the target** — cancellable skills with `GoalHandle`, hard-stop safety monitor that bypasses the LLM, three-tier simulation (stdlib → IR-SIM → MuJoCo), ROS2 bridge.
+- **Robots and desktop apps are both first-class** — robots get cancellable skills with `GoalHandle`, hard-stop `SafetyMonitor` that bypasses the LLM, three-tier simulation (stdlib → IR-SIM → MuJoCo), and a ROS2 bridge. Desktop apps get the same agent framework + voice pipeline shipped as a single PySide6 process — see [RookApp](#rookapp--desktop-chess-robot) below.
 - **Everything is offline** — no cloud APIs, no telemetry, no vendor lock. Gemma 4 via llama.cpp, faster-whisper, Kokoro/Piper/Supertonic TTS. Your mic audio never leaves the machine.
 
 ## 30-second demo
@@ -60,7 +60,7 @@ edgevox-setup                      # downloads ~3 GB of models, one time
 edgevox-agent robot-irsim --text-mode
 ```
 
-A matplotlib window opens showing a 10×10 apartment with four rooms. Type "go to the kitchen" — the blue robot drives visibly. Say "stop" mid-flight and it halts in ~200 ms (the safety monitor preempts before the LLM is consulted). Swap `--text-mode` for `--simple-ui` to drive it by voice.
+A matplotlib window opens showing a 10×10 apartment with four rooms. Type "go to the kitchen" — the blue robot drives visibly. Say "stop" mid-flight and the safety monitor preempts the skill *before the LLM is consulted* — the halt path doesn't wait on a model round-trip. Swap `--text-mode` for `--simple-ui` to drive it by voice.
 
 **3D — MuJoCo (tabletop arm pick-and-place)**
 
@@ -101,7 +101,7 @@ Subscribes to `odom`, optionally `scan` + `camera/image_raw`, and publishes `cmd
 - **Hooks** — 6 fire points (`on_run_start`, `before_llm`, `after_llm`, `before_tool`, `after_tool`, `on_run_end`), priority-ordered (Safety 100 → Observability 0), 12 built-ins ship + 3 SLM hardening hooks
 - **Memory** — bi-temporal `Fact` schema (`facts_as_of(t)`), `JSONMemoryStore` + `SQLiteSessionStore`, `Compactor` with tokenizer-exact counts, file-based `NotesFile`
 - **Artifacts** — versioned, indexed, exposable as LLM tools via `make_artifact_tools(store)`
-- **Cancellable skills** — `GoalHandle` lifecycle with `poll` / `cancel` / `feedback`, mid-flight preempt in ~200 ms
+- **Cancellable skills** — `GoalHandle` lifecycle with `poll` / `cancel` / `feedback`; mid-flight preempt is bounded by the skill-poll interval (no LLM round-trip on the cancel path)
 - **`SafetyMonitor`** — stop-word preempt before the LLM is consulted
 - **`EventBus`** — thread-safe pub/sub for observability, metrics, main-thread scheduling
 - **`SimEnvironment` protocol** — agent code swaps cleanly between `ToyWorld` (stdlib), `IrSimEnvironment` (IR-SIM), and `MujocoArmEnvironment` (MuJoCo)
@@ -110,9 +110,9 @@ Subscribes to `odom`, optionally `scan` + `camera/image_raw`, and publishes `cmd
 
 ### Voice pipeline (substrate)
 
-- **Sub-second streaming** — 0.8 s first-audio on RTX 3080 (VAD 32 ms + faster-whisper + Gemma 4 E2B + Kokoro)
+- **Streaming pipeline** — VAD (32 ms frames) + faster-whisper STT + Gemma 4 E2B + Kokoro TTS, designed for sub-second first-audio on consumer GPUs (target, not measured — bench harness in [`benchmarks/`](benchmarks/))
 - **16 languages** with 56 voices across 4 TTS backends
-- **Robust voice interrupt** — speak over the bot to cut it off; `specsub` AEC on by default + energy-ratio gate so the bot doesn't hear itself; LLM generation aborted via llama-cpp `stopping_criteria` (≤40 ms cancellation latency); back-to-back barge-ins re-arm cleanly
+- **Robust voice interrupt** — speak over the bot to cut it off; `specsub` AEC on by default + energy-ratio gate so the bot doesn't hear itself; LLM generation aborted via llama-cpp `stopping_criteria` (cancellation lands at the next decode step); back-to-back barge-ins re-arm cleanly
 - **4 wake words** — "Hey Jarvis", "Alexa", "Hey Mycroft", "Okay Nabu"
 - **4 interfaces** — TUI (Textual), Web UI (FastAPI + Vue), simple CLI, text mode
 - **ROS2-native** — voice-pipeline bridge, TF2 / Nav2 / sensor adapter, `edgevox_msgs/action/ExecuteSkill` action server, external-sim driver for Gazebo / Isaac / real hardware
@@ -268,12 +268,14 @@ Full TUI + slash-command reference: [`docs/documentation/commands.md`](docs/docu
 
 ## Hardware requirements
 
-| Device | RAM | GPU | Expected latency |
-|--------|-----|-----|-------------------|
-| PC (i9 + RTX 3080 16 GB) | 64 GB | CUDA | **~0.8 s** |
-| Jetson Orin Nano | 8 GB | CUDA | ~1.5-2 s |
-| MacBook Air M1 | 8 GB | Metal | ~2-3 s |
-| Any modern laptop | 16 GB+ | CPU only | ~2-4 s |
+| Device | RAM | GPU | Status |
+|--------|-----|-----|---|
+| PC (i9 + RTX 3080 16 GB) | 64 GB | CUDA | supported — first-audio latency TBD |
+| Jetson Orin Nano | 8 GB | CUDA | supported — first-audio latency TBD |
+| MacBook Air M1 | 8 GB | Metal | supported — first-audio latency TBD |
+| Any modern laptop | 16 GB+ | CPU only | supported — first-audio latency TBD |
+
+> Latency cells are intentionally TBD. EdgeVox does not publish projected or untested numbers. Once `benchmarks/perf/voice_ttft.py` runs on a given device, the measured value lands here. PRs welcome with hardware fingerprint + script output.
 
 ## ROS2 integration
 
@@ -369,6 +371,20 @@ Full site: [EdgeVox Docs](https://edgevox.nrl.ai) (VitePress). Run locally:
 
 ```bash
 cd docs && npm run dev
+```
+
+## Citation
+
+If you use EdgeVox in research or production, please cite:
+
+```bibtex
+@software{edgevox2026,
+  author = {Nguyen, Viet-Anh and {Neural Research Lab}},
+  title  = {EdgeVox: on-device voice agents for robotics},
+  year   = {2026},
+  url    = {https://github.com/nrl-ai/edgevox},
+  note   = {MIT License}
+}
 ```
 
 ## License
