@@ -28,7 +28,7 @@ hero:
     <span>plug-and-play hooks</span>
     <span>16 languages</span>
     <span>sub-second pipeline</span>
-    <span>open since 2024</span>
+    <span>open since 2026</span>
     <span>offline by default</span>
     <span>runs on a laptop</span>
     <span>no cloud required</span>
@@ -36,7 +36,7 @@ hero:
     <span>plug-and-play hooks</span>
     <span>16 languages</span>
     <span>sub-second pipeline</span>
-    <span>open since 2024</span>
+    <span>open since 2026</span>
   </div>
 </div>
 
