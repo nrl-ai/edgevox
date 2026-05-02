@@ -1059,6 +1059,24 @@ class ReActAgent:
     other recipe.
     """
 
+    # Phrases that indicate the model is *promising* a future action
+    # rather than reporting completion. When a no-tool reply contains
+    # any of these, the runner re-prompts ("don't describe -- call the
+    # tool now") instead of terminating.
+    _PROMISE_PATTERNS: tuple[str, ...] = (
+        "i will",
+        "i'll",
+        "let me",
+        "next,",
+        "first,",
+        "then i",
+        "now i",
+        "now, i",
+        "going to",
+        "i need to",
+        "i should",
+    )
+
     @staticmethod
     def build(
         *,
@@ -1066,9 +1084,10 @@ class ReActAgent:
         tools: list | None = None,
         skills: list | None = None,
         max_iterations: int = 20,
-        max_completion_recheck_attempts: int = 1,
+        max_completion_recheck_attempts: int = 3,
         instructions: str | None = None,
         completion_check: object | None = None,
+        auto_continue_on_promise: bool = True,
         name: str = "react",
     ) -> _ReActRunner:
         """Build the ReAct loop agent.
@@ -1101,6 +1120,8 @@ class ReActAgent:
             max_completion_recheck_attempts=max_completion_recheck_attempts,
             instructions=instructions or _DEFAULT_REACT_INSTRUCTIONS,
             completion_check=completion_check,
+            auto_continue_on_promise=auto_continue_on_promise,
+            promise_patterns=ReActAgent._PROMISE_PATTERNS,
         )
 
 
@@ -1118,12 +1139,16 @@ class _ReActRunner:
         max_completion_recheck_attempts: int,
         instructions: str,
         completion_check: object | None,
+        auto_continue_on_promise: bool = True,
+        promise_patterns: tuple[str, ...] = (),
     ) -> None:
         self.name = name
         self.description = f"ReActAgent({len(tools)} tools, {len(skills)} skills)"
         self._max_iterations = max_iterations
         self._max_recheck = max_completion_recheck_attempts
         self._completion_check = completion_check
+        self._auto_continue = auto_continue_on_promise
+        self._promise_patterns = promise_patterns
         # The whole ReAct loop lives inside one LLMAgent's hop loop.
         # Each hop is one think-act-observe cycle. ``max_tool_hops``
         # caps the loop length.
