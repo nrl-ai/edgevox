@@ -237,32 +237,67 @@ def _pre_run(args: argparse.Namespace) -> None:
             return None
 
         @hook(BEFORE_TOOL, priority=80)
-        def _reject_move_without_grasp(point, ctx, request):
-            """Refuse ``move_to_point`` calls when no ``grasp`` has fired yet.
+        def _enforce_grasp_move_release_order(point, ctx, request):
+            """Two structural checks that force the canonical sequence
+            ``grasp -> move_to_point -> release`` on weak models that
+            otherwise skip steps.
 
-            Without this, weak models satisfy the loose 'physical
-            action' predicate by moving the empty gripper -- the cube
-            stays where it was and the user thinks the sort failed.
-            By rejecting the move and feeding the error back to the
-            LLM as a tool-call result, the model learns it has to
-            grasp first.
+            1. Reject ``move_to_point`` / ``move_above_object`` when no
+               ``grasp`` has fired since the last ``release`` -- moving
+               the empty gripper doesn't move any cube.
+            2. Reject ``release`` when no ``move_to_point`` /
+               ``move_above_object`` has fired since the last ``grasp``
+               -- releasing without moving means the cube was picked up
+               and dropped in place.
+
+            Both errors feed back to the LLM as tool results so the
+            model can course-correct.
             """
             name = getattr(request, "name", None) or getattr(request, "tool_name", None)
-            if name in {"move_to_point", "move_above_object"}:
-                grasped_recently = any(n == "grasp" for n, _ in physical_log)
-                if not grasped_recently:
-                    request.skip_dispatch = True
-                    request.synthetic_result = (
-                        "ERROR: cannot move_to_point without first calling "
-                        "grasp(object). Moving the empty gripper does not "
-                        "move any cube. Call grasp(object='<cube_name>') "
-                        "first, then move."
-                    )
-                    return HookResult.replace(request, reason="move-without-grasp gate")
+
+            # Walk the action log to find the most recent grasp/release/move
+            # boundaries.
+            last_grasp_idx = max(
+                (i for i, (n, _) in enumerate(physical_log) if n == "grasp"),
+                default=-1,
+            )
+            last_release_idx = max(
+                (i for i, (n, _) in enumerate(physical_log) if n == "release"),
+                default=-1,
+            )
+            last_move_idx = max(
+                (i for i, (n, _) in enumerate(physical_log) if n in {"move_to_point", "move_above_object"}),
+                default=-1,
+            )
+
+            currently_holding = last_grasp_idx > last_release_idx
+
+            # Gate 1: move requires a recent grasp.
+            if name in {"move_to_point", "move_above_object"} and not currently_holding:
+                request.skip_dispatch = True
+                request.synthetic_result = (
+                    "ERROR: cannot move the gripper without first calling "
+                    "grasp(object). Moving the empty gripper does not move "
+                    "any cube. Call grasp(object='<cube_name>') FIRST, "
+                    "then move."
+                )
+                return HookResult.replace(request, reason="move-without-grasp gate")
+
+            # Gate 2: release requires a move since the last grasp.
+            if name == "release" and currently_holding and last_move_idx <= last_grasp_idx:
+                request.skip_dispatch = True
+                request.synthetic_result = (
+                    "ERROR: cannot release without first moving the held "
+                    "cube. You grasped a cube but never called "
+                    "move_to_point(x, y, z) to relocate it. Releasing now "
+                    "would drop the cube in place. Call move_to_point with "
+                    "the destination coordinates FIRST, then release."
+                )
+                return HookResult.replace(request, reason="release-without-move gate")
             return None
 
         inner._hooks.register(_record)
-        inner._hooks.register(_reject_move_without_grasp)
+        inner._hooks.register(_enforce_grasp_move_release_order)
 
 
 APP = AgentApp(
