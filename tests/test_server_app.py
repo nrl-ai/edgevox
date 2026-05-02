@@ -82,6 +82,10 @@ class FakeCore:
         self.inference_lock = asyncio.Lock()
         self.sessions: dict[str, SessionState] = {}
         self._base_history = list(self.llm._history)
+        # Real ServerCore has an optional agent harness attached; ws.py
+        # branches on `core.agent is not None`. The non-agent path is what
+        # this fake covers, so the attribute exists and is None.
+        self.agent = None
 
     def fresh_history(self) -> list[dict]:
         return [dict(m) for m in self._base_history]
