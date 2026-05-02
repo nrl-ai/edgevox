@@ -712,6 +712,39 @@ class AgentApp:
             ros2_worker = threading.Thread(target=_ros2_worker, name="ros2-text-input-worker", daemon=True)
             ros2_worker.start()
 
+        def _dispatch_with_render_pump(user: str, source: str) -> None:
+            """Run ``_dispatch`` on a worker thread; main thread pumps
+            the sim viewer at ~30 Hz so MuJoCo / IR-SIM windows stay
+            responsive during long LLM hops. Without this the viewer
+            freezes whenever the agent is thinking and physical
+            cube motion isn't visible.
+            """
+            if pump is None:
+                _dispatch(user, source)
+                return
+            import time as _t
+
+            done = threading.Event()
+            err: list[BaseException] = []
+
+            def _wrapped() -> None:
+                try:
+                    _dispatch(user, source)
+                except BaseException as e:
+                    err.append(e)
+                finally:
+                    done.set()
+
+            t = threading.Thread(target=_wrapped, name="agent-dispatch", daemon=True)
+            t.start()
+            while not done.is_set():
+                with contextlib.suppress(Exception):
+                    pump()
+                _t.sleep(0.033)
+            t.join(timeout=2.0)
+            if err:
+                raise err[0]
+
         try:
             _publish_state("listening")
             while True:
@@ -726,7 +759,7 @@ class AgentApp:
                 if user.lower() in {"quit", "exit", "bye"}:
                     return
                 with dispatch_lock:
-                    _dispatch(user, "stdin")
+                    _dispatch_with_render_pump(user, "stdin")
         finally:
             self._stop_ros2_bridge(bridge, ros2_stop, ros2_thread)
             if ros2_worker is not None:
