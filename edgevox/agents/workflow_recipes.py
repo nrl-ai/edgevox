@@ -988,10 +988,209 @@ class _PlannedToolDispatcherRunner:
         )
 
 
+# ===========================================================================
+# ReActAgent
+# ===========================================================================
+
+
+_DEFAULT_REACT_INSTRUCTIONS = """\
+You drive a robot/system through a Reason -> Act -> Observe loop.
+
+PROCESS (repeat until the user's task is truly complete):
+
+1. THINK: read the current state and the most recent tool result.
+   Decide what ONE action moves you closer to completion.
+2. ACT: call exactly ONE tool with the right arguments. Do not call
+   multiple tools in one response.
+3. OBSERVE: the framework will give you the tool's result on the
+   next turn. Use it to decide your next action.
+
+TERMINATION:
+- Only stop calling tools when the task is GENUINELY complete -- every
+  user-requested step has actually executed and you have evidence
+  (from tool results) that it succeeded.
+- When you stop, emit ONE short plain-text sentence summarising
+  what happened. No more tool calls after that.
+- Do NOT claim "done" prematurely. If the user asked for three things
+  and only one has been done, you are NOT done -- call the next tool.
+
+ANTI-PATTERNS TO AVOID:
+- Hallucinated completion: claiming you called a tool you did not call.
+- Single-tool stop: firing one tool and declaring victory. Most user
+  requests need 3+ tool calls.
+- Looping the same tool: if you call the same tool twice with the same
+  args and got the same error, change strategy.
+"""
+
+
+class ReActAgent:
+    """Reason -> Act -> Observe iterative loop agent.
+
+    Wraps :class:`~edgevox.agents.base.LLMAgent` with ReAct-tuned defaults
+    for tasks where the plan can't be determined upfront -- the next
+    action depends on what the previous tool returned. Common cases:
+
+    - Search / exploration ("find the red object somewhere on the table")
+    - Branching dialog ("ask the user which colour they prefer, then act")
+    - Recovery ("if the grasp fails, try a different approach height")
+
+    Compared to :class:`PlannedToolDispatcher`:
+
+    +--------------------------+--------------------+--------------------+
+    | Property                 | PlannedDispatcher  | ReActAgent         |
+    +==========================+====================+====================+
+    | Plan timing              | Up-front, once     | Step-by-step       |
+    | LLM hops per task        | 2 (plan + synth)   | 1 per step + 1     |
+    | Adapts to tool results   | No                 | Yes                |
+    | Sycophancy risk          | None               | Yes (mitigations   |
+    |                          |                    |  via completion    |
+    |                          |                    |  check)            |
+    | Right when plan is...    | Determinable       | Discovered as      |
+    |                          | from user request  | tools return       |
+    +--------------------------+--------------------+--------------------+
+
+    Optional ``completion_check`` predicate vetoes early termination:
+    if the model emits a "done" reply but ``completion_check(ctx)``
+    returns ``False``, the agent re-prompts itself with a "task is
+    not yet done -- continue" message and gets another N hops.
+
+    Returned object exposes ``.run(task, ctx) -> AgentResult`` so it
+    composes with workflow primitives and ``AgentApp`` like every
+    other recipe.
+    """
+
+    @staticmethod
+    def build(
+        *,
+        llm: object | None = None,
+        tools: list | None = None,
+        skills: list | None = None,
+        max_iterations: int = 20,
+        max_completion_recheck_attempts: int = 1,
+        instructions: str | None = None,
+        completion_check: object | None = None,
+        name: str = "react",
+    ) -> _ReActRunner:
+        """Build the ReAct loop agent.
+
+        Args:
+            llm: LLM-shape. May be None for late-binding via AgentApp.
+            tools / skills: action surface available to the loop.
+            max_iterations: hard cap on think+act cycles per user turn.
+                Hitting this returns whatever the agent has produced so
+                far with a budget-exhausted note.
+            max_completion_recheck_attempts: when ``completion_check``
+                is set and the agent declares done prematurely, how
+                many extra ``max_iterations`` rounds to grant after
+                re-prompting. Default 1 (one extra round).
+            instructions: override for the canonical ReAct persona.
+                Pass when the project needs different role / safety
+                framing -- the default emphasises don't-stop-too-early.
+            completion_check: optional callable ``(ctx) -> bool``. When
+                set and the model stops emitting tool calls, this is
+                consulted before accepting the termination. False ->
+                agent gets a "not done yet" re-prompt.
+            name: workflow display name.
+        """
+        return _ReActRunner(
+            name=name,
+            llm=llm,
+            tools=tools or [],
+            skills=skills or [],
+            max_iterations=max_iterations,
+            max_completion_recheck_attempts=max_completion_recheck_attempts,
+            instructions=instructions or _DEFAULT_REACT_INSTRUCTIONS,
+            completion_check=completion_check,
+        )
+
+
+class _ReActRunner:
+    """Internal runner; see :class:`ReActAgent` for docs."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        llm: object | None,
+        tools: list,
+        skills: list,
+        max_iterations: int,
+        max_completion_recheck_attempts: int,
+        instructions: str,
+        completion_check: object | None,
+    ) -> None:
+        self.name = name
+        self.description = f"ReActAgent({len(tools)} tools, {len(skills)} skills)"
+        self._max_iterations = max_iterations
+        self._max_recheck = max_completion_recheck_attempts
+        self._completion_check = completion_check
+        # The whole ReAct loop lives inside one LLMAgent's hop loop.
+        # Each hop is one think-act-observe cycle. ``max_tool_hops``
+        # caps the loop length.
+        self._inner = LLMAgent(
+            name=name,
+            description=self.description,
+            instructions=instructions,
+            tools=tools,
+            skills=skills,
+            llm=llm,  # type: ignore[arg-type]
+            max_tool_hops=max_iterations,
+        )
+        # Expose ``_children`` so framework's ``_bind_llm_recursive``
+        # can late-bind a shared LLM into our inner agent without
+        # special-casing this class.
+        self._children = [self._inner]
+
+    def bind_llm(self, llm: object) -> None:
+        """Late-bind the LLM into the inner agent."""
+        if self._inner.llm is None:
+            self._inner.bind_llm(llm)  # type: ignore[arg-type]
+
+    def run(self, task: str, ctx: object | None = None):
+        from edgevox.agents.base import AgentContext, AgentResult
+
+        ctx = ctx or AgentContext()
+        result = self._inner.run(task, ctx)
+
+        # Optional completion-check: if the model declared done but
+        # the predicate says the task isn't actually finished, prod
+        # the agent to keep going for one more round.
+        if self._completion_check is not None:
+            attempts = 0
+            while attempts < self._max_recheck:
+                try:
+                    done = bool(self._completion_check(ctx))
+                except Exception:
+                    done = False
+                if done:
+                    break
+                attempts += 1
+                # Re-prompt -- LLMAgent maintains its own conversation
+                # history, so the "not done yet" message lands as a
+                # fresh user turn that the model has to act on.
+                followup = (
+                    "Your last reply suggested completion, but the task "
+                    "is NOT yet done -- review the tool results so far "
+                    "and continue calling tools until everything the "
+                    "user asked for has actually been executed."
+                )
+                result = self._inner.run(followup, ctx)
+            else:
+                # Loop exited without breaking -- budget exhausted.
+                pass
+
+        return AgentResult(
+            reply=result.reply,
+            agent_name=self.name,
+            elapsed=getattr(result, "elapsed", 0.0),
+        )
+
+
 __all__ = [
     "ApprovalGate",
     "CritiqueAndRewrite",
     "PlanExecuteEvaluate",
     "PlanThenLoop",
     "PlannedToolDispatcher",
+    "ReActAgent",
 ]

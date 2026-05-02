@@ -4,6 +4,12 @@ This is the Tier-2a simulation demo: a Franka Emika Panda (or the
 bundled XYZ gantry fallback) drives a 3D arm to pick, move, and place
 coloured cubes on a table in a MuJoCo viewer window.
 
+The agent uses :class:`~edgevox.agents.workflow_recipes.PlannedToolDispatcher`
+by default (planner emits a JSON plan, Python loop direct-dispatches
+each step, synthesiser writes the user-facing reply). Pass ``--legacy``
+to fall back to the single-LLMAgent dispatch -- useful for benchmarking
+the chain-handling difference but expect sycophancy on weak local models.
+
 Launch:
 
     edgevox-agent robot-panda                 # full TUI voice (default)
@@ -11,6 +17,7 @@ Launch:
     edgevox-agent robot-panda --text-mode     # keyboard chat + MuJoCo viewer
     edgevox-agent robot-panda --no-render     # headless, tests only
     edgevox-agent robot-panda --gantry        # force the bundled gantry fallback
+    edgevox-agent robot-panda --legacy        # single-LLMAgent (no planner/synth)
 
 Requires ``pip install 'edgevox[sim-mujoco]'`` (or ``pip install 'mujoco>=3.2'``).
 The Franka scene is auto-fetched from HuggingFace Hub on first run (~33 MB).
@@ -162,21 +169,47 @@ def _pre_run(args: argparse.Namespace) -> None:
         render=not getattr(args, "no_render", False),
     )
 
-    # When --planned is set, swap the auto-built single-LLMAgent
-    # (which sycophants on chains for weak local models) for the
-    # PlannedToolDispatcher recipe: planner emits JSON plan, Python
-    # loop direct-dispatches each step, synthesiser writes the user
-    # reply. The framework's _bind_llm_recursive will inject the
-    # loaded LLM into both inner agents via the dispatcher's
-    # _children attribute.
-    if getattr(args, "planned", False):
+    # Pick the dispatch architecture. Three options:
+    #
+    #   --legacy  : single LLMAgent with all tools attached. Sycophants
+    #               on chains for weak local models (Gemma 4 E2B/E4B):
+    #               model claims release / goto_home without actually
+    #               calling them. Kept for back-compat / benchmarking.
+    #
+    #   --react   : ReActAgent loop -- think -> act -> observe -> repeat.
+    #               LLM iterates until it stops emitting tool calls or
+    #               hits max_iterations. Adapts to tool results. Slower
+    #               (one LLM hop per step), more flexible. Good for
+    #               search / exploration / branching tasks.
+    #
+    #   default   : PlannedToolDispatcher -- planner emits JSON plan,
+    #               Python loop direct-dispatches each step, synthesiser
+    #               writes user-facing reply. Fastest, most reliable for
+    #               tasks where the plan can be determined upfront.
+    common_skills = [move_to_point, move_above_object, grasp, release, goto_home, get_ee_pose]
+    common_tools = [list_objects, locate_object, get_gripper_state]
+
+    if getattr(args, "legacy", False):
+        # Keep the auto-built single-LLMAgent that AgentApp.__post_init__
+        # already wired -- nothing to do here.
+        pass
+    elif getattr(args, "react", False):
+        from edgevox.agents.workflow_recipes import ReActAgent
+
+        APP.agent = ReActAgent.build(
+            llm=None,
+            tools=common_tools,
+            skills=common_skills,
+            max_iterations=20,
+        )
+    else:
         from edgevox.agents.workflow_recipes import PlannedToolDispatcher
 
         APP.agent = PlannedToolDispatcher.build(
             planner_llm=None,
             synthesiser_llm=None,
-            tools=[list_objects, locate_object, get_gripper_state],
-            skills=[move_to_point, move_above_object, grasp, release, goto_home, get_ee_pose],
+            tools=common_tools,
+            skills=common_skills,
             max_steps=10,
         )
 
@@ -206,14 +239,25 @@ APP = AgentApp(
         (("--no-render",), {"action": "store_true", "help": "Run headless (no MuJoCo viewer)."}),
         (("--gantry",), {"action": "store_true", "help": "Use the bundled gantry arm instead of Franka."}),
         (
-            ("--planned",),
+            ("--legacy",),
             {
                 "action": "store_true",
                 "help": (
-                    "Use the PlannedToolDispatcher recipe (planner -> Python "
-                    "loop -> synthesiser) instead of a single LLMAgent. "
-                    "Recommended on weak local models (Gemma 4 E2B/E4B) that "
-                    "exhibit sycophancy on multi-step chains."
+                    "Use the legacy single-LLMAgent dispatch (sycophants "
+                    "on multi-step chains with weak models -- kept for "
+                    "back-compat and benchmarking)."
+                ),
+            },
+        ),
+        (
+            ("--react",),
+            {
+                "action": "store_true",
+                "help": (
+                    "Use the ReActAgent loop (think -> act -> observe -> "
+                    "repeat) instead of the default PlannedToolDispatcher. "
+                    "Right when next action depends on previous tool "
+                    "result -- search, exploration, recovery."
                 ),
             },
         ),
