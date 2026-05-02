@@ -162,6 +162,24 @@ def _pre_run(args: argparse.Namespace) -> None:
         render=not getattr(args, "no_render", False),
     )
 
+    # When --planned is set, swap the auto-built single-LLMAgent
+    # (which sycophants on chains for weak local models) for the
+    # PlannedToolDispatcher recipe: planner emits JSON plan, Python
+    # loop direct-dispatches each step, synthesiser writes the user
+    # reply. The framework's _bind_llm_recursive will inject the
+    # loaded LLM into both inner agents via the dispatcher's
+    # _children attribute.
+    if getattr(args, "planned", False):
+        from edgevox.agents.workflow_recipes import PlannedToolDispatcher
+
+        APP.agent = PlannedToolDispatcher.build(
+            planner_llm=None,
+            synthesiser_llm=None,
+            tools=[list_objects, locate_object, get_gripper_state],
+            skills=[move_to_point, move_above_object, grasp, release, goto_home, get_ee_pose],
+            max_steps=10,
+        )
+
 
 APP = AgentApp(
     name="Panda",
@@ -187,6 +205,18 @@ APP = AgentApp(
     extra_args=[
         (("--no-render",), {"action": "store_true", "help": "Run headless (no MuJoCo viewer)."}),
         (("--gantry",), {"action": "store_true", "help": "Use the bundled gantry arm instead of Franka."}),
+        (
+            ("--planned",),
+            {
+                "action": "store_true",
+                "help": (
+                    "Use the PlannedToolDispatcher recipe (planner -> Python "
+                    "loop -> synthesiser) instead of a single LLMAgent. "
+                    "Recommended on weak local models (Gemma 4 E2B/E4B) that "
+                    "exhibit sycophancy on multi-step chains."
+                ),
+            },
+        ),
     ],
     pre_run=_pre_run,
 )

@@ -775,8 +775,8 @@ class _PlannedToolDispatcherRunner:
         self,
         *,
         name: str,
-        planner_llm: object,
-        synthesiser_llm: object,
+        planner_llm: object | None,
+        synthesiser_llm: object | None,
         tools: list,
         skills: list,
         max_steps: int,
@@ -788,11 +788,8 @@ class _PlannedToolDispatcherRunner:
 
         self.name = name
         self.description = f"PlannedToolDispatcher({len(tools)} tools, {len(skills)} skills)"
-        self._planner_llm = planner_llm
-        self._synth_llm = synthesiser_llm
         self._max_steps = max_steps
-        self._planner_instructions = planner_instructions
-        self._synthesiser_instructions = synthesiser_instructions
+        self._synth_template = synthesiser_instructions or _DEFAULT_PLANNED_DISPATCHER_SYNTHESISER
 
         self._tools_by_name: dict = {}
         for t in tools:
@@ -806,6 +803,44 @@ class _PlannedToolDispatcherRunner:
             self._skills_by_name[s.name] = s
 
         self._catalog = self._build_catalog()
+
+        # Pre-build the planner + synthesiser as stable LLMAgent
+        # instances so framework's ``_bind_llm_recursive`` can wire a
+        # shared LLM into both via the ``_children`` attribute when
+        # ``planner_llm=None`` is passed (the AgentApp / edgevox-agent
+        # late-bind path).
+        planner_inst = (planner_instructions or _DEFAULT_PLANNED_DISPATCHER_PLANNER).format(tool_catalog=self._catalog)
+        self._planner = LLMAgent(
+            name="Planner",
+            description="emits JSON action plan",
+            instructions=planner_inst,
+            llm=planner_llm,  # type: ignore[arg-type]
+        )
+        # Synth instructions get re-formatted per turn with the actual
+        # task / plan / results; placeholder text here.
+        self._synth = LLMAgent(
+            name="Synthesiser",
+            description="writes the user-facing one-sentence summary",
+            instructions="(set per turn)",
+            llm=synthesiser_llm,  # type: ignore[arg-type]
+        )
+        # ``_children`` is the canonical attribute the framework's
+        # binder walks to inject a shared LLM into every leaf. Listing
+        # both inner LLMAgents here makes the late-bind path work
+        # transparently for AgentApp.
+        self._children = [self._planner, self._synth]
+
+    def bind_llm(self, llm: object) -> None:
+        """Late-bind a shared LLM into both inner agents.
+
+        Called by ``edgevox.agents.workflow._bind_llm_recursive`` when
+        the dispatcher is dropped into ``AgentApp`` and the model is
+        loaded after construction.
+        """
+        if self._planner.llm is None:
+            self._planner.bind_llm(llm)  # type: ignore[arg-type]
+        if self._synth.llm is None:
+            self._synth.bind_llm(llm)  # type: ignore[arg-type]
 
     def _build_catalog(self) -> str:
         import json as _json
@@ -835,16 +870,10 @@ class _PlannedToolDispatcherRunner:
         return self._synthesise(task, plan, results, ctx)
 
     def _plan(self, task: str, ctx: object) -> list[dict]:
-        instructions = (self._planner_instructions or _DEFAULT_PLANNED_DISPATCHER_PLANNER).format(
-            tool_catalog=self._catalog
-        )
-        planner = LLMAgent(
-            name="Planner",
-            description="emits JSON action plan",
-            instructions=instructions,
-            llm=self._planner_llm,  # type: ignore[arg-type]
-        )
-        result = planner.run(task, ctx)
+        # ``self._planner`` is a stable LLMAgent built at __init__ with
+        # the catalog already baked into instructions; the framework's
+        # ``_bind_llm_recursive`` may have late-bound an LLM into it.
+        result = self._planner.run(task, ctx)
         return self._parse_plan(result.reply)
 
     @staticmethod
@@ -937,26 +966,21 @@ class _PlannedToolDispatcherRunner:
     def _synthesise(self, task: str, plan: list[dict], results: list[dict], ctx: object):
         from edgevox.agents.base import AgentResult
 
-        # Short-circuit: empty plan + no results -> the planner decided
-        # the request needs no tools, OR couldn't be done. Synthesise
-        # against an empty plan so the LLM explains.
         plan_summary = "\n".join(f"- {s.get('tool')}({s.get('args', {})})" for s in plan) or "(empty plan)"
         results_summary = (
             "\n".join(f"- {r['step'].get('tool')}: " + ("OK" if r["ok"] else f"FAIL ({r['error']})") for r in results)
             or "(no steps run)"
         )
 
-        instructions = (self._synthesiser_instructions or _DEFAULT_PLANNED_DISPATCHER_SYNTHESISER).format(
-            task=task, plan_summary=plan_summary, results_summary=results_summary
+        # Re-template the synth's instructions for THIS turn; ``self._synth``
+        # is reused across runs so we update its system prompt before
+        # calling run().
+        self._synth.instructions = self._synth_template.format(
+            task=task,
+            plan_summary=plan_summary,
+            results_summary=results_summary,
         )
-
-        synth = LLMAgent(
-            name="Synthesiser",
-            description="writes the user-facing one-sentence summary",
-            instructions=instructions,
-            llm=self._synth_llm,  # type: ignore[arg-type]
-        )
-        result = synth.run("Write the summary now.", ctx)
+        result = self._synth.run("Write the summary now.", ctx)
         return AgentResult(
             reply=result.reply,
             agent_name=self.name,
