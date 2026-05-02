@@ -242,10 +242,13 @@ def _mujoco_pick_red(args: argparse.Namespace) -> int:
     from edgevox.agents.skills import skill
     from edgevox.integrations.sim.mujoco_arm import MujocoArmEnvironment
 
-    print("[demo] loading MuJoCo Franka scene (headless)...", file=sys.stderr)
+    if args.render:
+        print("[demo] loading MuJoCo Franka scene (with viewer)...", file=sys.stderr)
+    else:
+        print("[demo] loading MuJoCo Franka scene (headless)...", file=sys.stderr)
     # Use Franka (the real model) instead of gantry: gantry has a physics
     # bug that rockets cubes on arm contact (verified May 2026).
-    world = MujocoArmEnvironment(model_source="franka", render=False)
+    world = MujocoArmEnvironment(model_source="franka", render=args.render)
 
     events: list[tuple[str, dict]] = []
 
@@ -308,6 +311,15 @@ def _mujoco_pick_red(args: argparse.Namespace) -> int:
     print("Events:")
     for n, a in events:
         print(f"  - {n}({a})")
+    if args.render:
+        # Pump the viewer for a few seconds so the user can see the
+        # final scene state before the daemon thread tears down.
+        import time as _t
+
+        print("\n[viewer] holding open for 8 s -- close the window or wait...")
+        for _ in range(80):
+            world.pump_render()
+            _t.sleep(0.1)
     return 0
 
 
@@ -400,11 +412,14 @@ def _mujoco_pick_and_place(args: argparse.Namespace) -> int:
     from edgevox.agents.skills import skill
     from edgevox.integrations.sim.mujoco_arm import MujocoArmEnvironment
 
-    print("[demo] loading MuJoCo Franka scene (headless)...", file=sys.stderr)
+    if args.render:
+        print("[demo] loading MuJoCo Franka scene (with viewer)...", file=sys.stderr)
+    else:
+        print("[demo] loading MuJoCo Franka scene (headless)...", file=sys.stderr)
     # Franka grasps cleanly. The gantry model has a physics bug where the
     # actuators rocket the cube on contact (verified May 2026). Until the
     # gantry is fixed, real demos run on Franka.
-    world = MujocoArmEnvironment(model_source="franka", render=False)
+    world = MujocoArmEnvironment(model_source="franka", render=args.render)
     events: list[tuple[str, dict]] = []
 
     @tool
@@ -449,20 +464,69 @@ def _mujoco_pick_and_place(args: argparse.Namespace) -> int:
         events.append(("goto_home", {}))
         return ctx.deps.apply_action("goto_home")
 
-    if args.scripted:
-        llm = _scripted(
-            [
-                _calls(("list_objects", {})),
-                _calls(("grasp", {"object": "red_cube"})),
-                _calls(("move_to", {"x": 0.0, "y": 0.3, "z": 0.5})),
-                _calls(("release", {})),
-                _calls(("goto_home", {})),
-                _reply("Red cube relocated to (0.0, 0.3, 0.5); arm returned home."),
-            ]
-        )
-    else:
-        llm = _build_real_llm(args.model)
+    # Choreography: pick three cubes one at a time, drop each in a
+    # different zone, then return home. Drives the sim end-to-end so
+    # the user can watch real motion in the viewer. Each segment fires
+    # the @skill the same way an LLM would; the only difference is
+    # determinism -- no model in the loop.
+    drop_zones = {
+        "red_cube": (0.5, 0.30, 0.50),
+        "green_cube": (0.5, 0.00, 0.50),
+        "blue_cube": (0.5, -0.30, 0.50),
+    }
 
+    if args.scripted or args.render:
+        # In scripted/render mode, drive the sim directly so we don't
+        # depend on the LLM cooperating. The agent's @skill wrappers
+        # are still in place; we just drive them via ctx.deps directly.
+        # (This is also what an LLM would compile to internally.)
+        from edgevox.agents.skills import GoalStatus as _GS
+
+        def _wait(handle, label, timeout_s=12.0):
+            print(f"  -> {label}", flush=True)
+            t0 = time.perf_counter()
+            while time.perf_counter() - t0 < timeout_s:
+                if handle.status in (_GS.SUCCEEDED, _GS.FAILED, _GS.CANCELLED):
+                    break
+                time.sleep(0.1)
+            return handle.status
+
+        import time
+
+        print(f"[task] {args.task!r}")
+        print(f"[choreography] pick + place {len(drop_zones)} cubes, then home")
+
+        for cube, (x, y, z) in drop_zones.items():
+            events.append(("grasp", {"object": cube}))
+            h = world.apply_action("grasp", object=cube)
+            _wait(h, f"grasp {cube}")
+
+            events.append(("move_to", {"x": x, "y": y, "z": z}))
+            h = world.apply_action("move_to", x=x, y=y, z=z)
+            _wait(h, f"move_to ({x}, {y}, {z})")
+
+            events.append(("release", {}))
+            h = world.apply_action("release")
+            _wait(h, "release")
+
+        events.append(("goto_home", {}))
+        h = world.apply_action("goto_home")
+        _wait(h, "goto_home")
+
+        print()
+        print("--- Final cube positions ---")
+        for obj in world.apply_action("list_objects").result or []:
+            print(f"  {obj['name']}: ({obj['x']:.2f}, {obj['y']:.2f}, {obj['z']:.2f})")
+
+        if args.render:
+            print("\n[viewer] holding open for 8 s -- close the window or wait...")
+            for _ in range(80):
+                world.pump_render()
+                time.sleep(0.1)
+        return 0
+
+    # Real-LLM path (model-driven).
+    llm = _build_real_llm(args.model)
     agent = LLMAgent(
         name="PickerBot",
         description="full-surface arm",
@@ -477,7 +541,6 @@ def _mujoco_pick_and_place(args: argparse.Namespace) -> int:
         max_tool_hops=8,
         llm=llm,
     )
-
     ctx = AgentContext(deps=world, stop=threading.Event())
     print(f"[task] {args.task!r}")
     result = agent.run(args.task, ctx)
@@ -488,6 +551,153 @@ def _mujoco_pick_and_place(args: argparse.Namespace) -> int:
     print("Events:")
     for n, a in events:
         print(f"  - {n}({a})")
+    return 0
+
+
+# ---- Scenario G: MuJoCo LLM-controlled choreography ----
+
+
+def _mujoco_llm_choreography(args: argparse.Namespace) -> int:
+    """LLM drives the arm through pick + place + release for each cube,
+    then returns home. Uses an outer Python plan + per-step mini-agents
+    so a small model only has to call ONE skill per LLM call -- which
+    is a load Gemma 4 E4B handles reliably, even though it sycophants
+    on long single-agent skill chains.
+
+    The whole sequence is observable in the MuJoCo viewer when --render
+    is set. ~12 mini-agent calls, one LLM hop each, ~60-180 s end to end.
+    """
+    try:
+        import mujoco  # noqa: F401
+    except ImportError:
+        print("[error] mujoco not installed", file=sys.stderr)
+        return 2
+
+    from edgevox.agents.skills import skill
+    from edgevox.integrations.sim.mujoco_arm import MujocoArmEnvironment
+
+    if args.render:
+        print("[demo] loading MuJoCo Franka scene (with viewer)...", file=sys.stderr)
+    else:
+        print("[demo] loading MuJoCo Franka scene (headless)...", file=sys.stderr)
+    world = MujocoArmEnvironment(model_source="franka", render=args.render)
+    events: list[tuple[str, dict]] = []
+
+    @skill(latency_class="slow", timeout_s=15.0)
+    def grasp(object: str, ctx):
+        """Grasp a named object body.
+
+        Args:
+            object: body name (red_cube / green_cube / blue_cube).
+        """
+        events.append(("grasp", {"object": object}))
+        return ctx.deps.apply_action("grasp", object=object)
+
+    @skill(latency_class="slow", timeout_s=15.0)
+    def move_to(x: float, y: float, z: float, ctx):
+        """Move the arm end effector to (x, y, z).
+
+        Args:
+            x: target x in metres.
+            y: target y in metres.
+            z: target z in metres.
+        """
+        events.append(("move_to", {"x": x, "y": y, "z": z}))
+        return ctx.deps.apply_action("move_to", x=x, y=y, z=z)
+
+    @skill(latency_class="slow", timeout_s=15.0)
+    def release(ctx):
+        """Release the gripper."""
+        events.append(("release", {}))
+        return ctx.deps.apply_action("release")
+
+    @skill(latency_class="slow", timeout_s=15.0)
+    def goto_home(ctx):
+        """Return to home pose."""
+        events.append(("goto_home", {}))
+        return ctx.deps.apply_action("goto_home")
+
+    if args.scripted:
+        # 12 turns: 3 cubes x (grasp, move, release) + final home.
+        scripted_msgs: list[dict] = []
+        plan = [
+            ("red_cube", 0.5, 0.30, 0.50),
+            ("green_cube", 0.5, 0.00, 0.50),
+            ("blue_cube", 0.5, -0.30, 0.50),
+        ]
+        for cube, x, y, z in plan:
+            scripted_msgs.append(_calls(("grasp", {"object": cube})))
+            scripted_msgs.append(_calls(("move_to", {"x": x, "y": y, "z": z})))
+            scripted_msgs.append(_calls(("release", {})))
+        scripted_msgs.append(_calls(("goto_home", {})))
+        llm = _scripted(scripted_msgs)
+    else:
+        llm = _build_real_llm(args.model)
+
+    ctx = AgentContext(deps=world, stop=threading.Event())
+
+    def _step(skill_obj, instructions: str, task: str, label: str) -> None:
+        """One mini-agent run -- the agent has exactly one skill so the
+        LLM has no other option but to call it. We DON'T use
+        ``tool_choice_policy="required_first_hop"`` here because the
+        GBNF grammar generator emits a malformed grammar for the
+        single-skill schema on llama.cpp; the model dispatches the
+        skill anyway when it's the only thing available."""
+        import time as _t
+
+        t0 = _t.perf_counter()
+        print(f"  [step] {label}", flush=True)
+        sub = LLMAgent(
+            name="Step",
+            description="single-skill executor",
+            instructions=instructions,
+            skills=[skill_obj],
+            llm=llm,
+            max_tool_hops=2,
+        )
+        sub.run(task, ctx)
+        print(f"        took {_t.perf_counter() - t0:.1f}s", flush=True)
+
+    # Default: all 3 cubes. Pass --single-cube to run only red cube (fast).
+    plan = [
+        ("red_cube", 0.5, 0.30, 0.50),
+        ("green_cube", 0.5, 0.00, 0.50),
+        ("blue_cube", 0.5, -0.30, 0.50),
+    ]
+    if getattr(args, "single_cube", False):
+        plan = plan[:1]
+
+    print(f"[task] {args.task!r}", flush=True)
+    print(f"[plan] {len(plan)} cube(s); per-cube: grasp -> move_to -> release; then goto_home", flush=True)
+
+    for cube, x, y, z in plan:
+        _step(grasp, "Call the grasp skill with the named object.", f"Grasp the {cube}.", f"grasp {cube}")
+        _step(
+            move_to,
+            "Call the move_to skill with the given x, y, z coordinates.",
+            f"Move arm to ({x}, {y}, {z}).",
+            f"move_to ({x},{y},{z})",
+        )
+        _step(release, "Call the release skill.", "Release the gripper.", "release")
+
+    _step(goto_home, "Call the goto_home skill.", "Return to home pose.", "goto_home")
+
+    print()
+    print("--- Final cube positions ---")
+    for obj in world.apply_action("list_objects").result or []:
+        print(f"  {obj['name']}: ({obj['x']:.2f}, {obj['y']:.2f}, {obj['z']:.2f})")
+    print()
+    print("Skill calls observed:")
+    for n, a in events:
+        print(f"  - {n}({a})")
+
+    if args.render:
+        import time as _t
+
+        print("\n[viewer] holding open for 8 s -- close the window or wait...")
+        for _ in range(80):
+            world.pump_render()
+            _t.sleep(0.1)
     return 0
 
 
@@ -588,6 +798,10 @@ _DISPATCH = {
     "irsim_battery_aware": (_irsim_battery_aware, "drive to the office if you have enough battery"),
     "mujoco_pick_red": (_mujoco_pick_red, "pick up the red cube and return home"),
     "mujoco_pick_and_place": (_mujoco_pick_and_place, "move the red cube to (0.0, 0.3, 0.5)"),
+    "mujoco_llm_choreography": (
+        _mujoco_llm_choreography,
+        "sort all 3 cubes into separate zones, then go home",
+    ),
 }
 
 
@@ -597,6 +811,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", help="Model path or hf: shorthand. Required unless --scripted.")
     parser.add_argument("--scripted", action="store_true", help="Use deterministic ScriptedLLM (no model needed).")
     parser.add_argument("--task", help="Override the default task string for the chosen scenario.")
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Open a viewer window for sims that support it (MuJoCo, IR-SIM matplotlib).",
+    )
+    parser.add_argument(
+        "--single-cube",
+        action="store_true",
+        help="LLM choreography only: run one cube instead of three (faster).",
+    )
     args = parser.parse_args(argv)
 
     handler, default_task = _DISPATCH[args.scenario]
