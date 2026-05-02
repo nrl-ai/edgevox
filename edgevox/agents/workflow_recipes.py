@@ -350,4 +350,301 @@ class _PlanThenLoopRunner:
         return last_result or AgentResult(reply="VERDICT: FAIL -- no iterations ran", agent_name=self.name)
 
 
-__all__ = ["PlanExecuteEvaluate", "PlanThenLoop"]
+_DEFAULT_APPROVER_INSTRUCTIONS = """\
+You are an approval gate. You receive a proposed action plan from another
+agent. Decide whether the action is safe to execute. Reply with EXACTLY
+one line:
+
+    APPROVED
+
+or
+
+    DENIED -- <one-sentence reason>
+
+You must NOT call tools. You must NOT modify the plan. Be conservative:
+when in doubt, DENY. A wrongly-approved destructive action is far worse
+than a wrongly-denied benign one.
+"""
+
+
+class ApprovalGate:
+    """Two-stage gate: a proposer drafts a plan, an approver decides yes / no.
+
+    Useful for any action where executing first and apologising later is
+    not acceptable -- destructive tool calls, navigation into restricted
+    zones, irreversible state changes, anything privilege-elevated. The
+    approver is structurally a separate agent (so it can't rationalise
+    away its own concerns), and the conditional executor only fires
+    when the approver returned APPROVED.
+
+    Usage::
+
+        from edgevox.agents.workflow_recipes import ApprovalGate
+
+        gate = ApprovalGate.build(
+            proposer_llm=proposer_llm,
+            approver_llm=approver_llm,
+            executor_agent=executor_agent,
+        )
+        result = gate.run("delete the user's archived projects")
+        # result.reply is "DENIED -- ..." or the executor's final reply.
+
+    Three structural choices the recipe locks in:
+
+    1. The proposer outputs a plan in plain text -- no tool calls. The
+       approver works off the plan, not the action.
+    2. The approver is a *separate* agent. Self-approving agents over-
+       rate the safety of their own plans for the same reason
+       self-evaluators over-rate the success of their own work.
+    3. The executor only runs on APPROVED. On DENIED the recipe
+       short-circuits with the denial reason as its final reply.
+    """
+
+    @staticmethod
+    def build(
+        *,
+        proposer_llm: object,
+        approver_llm: object,
+        executor_agent: object,
+        proposer_instructions: str | None = None,
+        approver_instructions: str | None = None,
+        name: str = "approval_gate",
+    ) -> _ApprovalGateRunner:
+        """Construct the gate.
+
+        Args:
+            proposer_llm: drives the proposer agent.
+            approver_llm: drives the approver agent.
+            executor_agent: the agent (or workflow) to run when
+                APPROVED. Typically an ``LLMAgent`` with the actual
+                tools attached, or a full ``PlanExecuteEvaluate`` /
+                ``PlanThenLoop`` recipe for richer execution.
+            proposer_instructions / approver_instructions: optional
+                overrides of the canonical instructions.
+            name: workflow name (shown in event bus + traces).
+        """
+        proposer = LLMAgent(
+            name="Proposer",
+            description="drafts the proposed action plan",
+            instructions=(
+                proposer_instructions
+                or "You are a proposer. Read the user request and write a "
+                "concrete plan describing what tool calls or actions you "
+                "would take. Do NOT call any tools yourself. Do NOT decide "
+                "whether the plan is safe; that is the approver's job. "
+                "Output only the plan as plain text."
+            ),
+            llm=proposer_llm,  # type: ignore[arg-type]
+        )
+        approver = LLMAgent(
+            name="Approver",
+            description="approves or denies the proposed plan",
+            instructions=approver_instructions or _DEFAULT_APPROVER_INSTRUCTIONS,
+            llm=approver_llm,  # type: ignore[arg-type]
+        )
+        return _ApprovalGateRunner(
+            name=name,
+            proposer=proposer,
+            approver=approver,
+            executor=executor_agent,
+        )
+
+
+class _ApprovalGateRunner:
+    def __init__(
+        self,
+        *,
+        name: str,
+        proposer: object,
+        approver: object,
+        executor: object,
+    ) -> None:
+        self.name = name
+        self.description = f"ApprovalGate({getattr(executor, 'name', 'executor')})"
+        self._proposer = proposer
+        self._approver = approver
+        self._executor = executor
+
+    def run(self, task: str, ctx: object | None = None):
+        from edgevox.agents.base import AgentContext, AgentResult
+
+        ctx = ctx or AgentContext()
+
+        # Stage 1: propose.
+        proposal = self._proposer.run(task, ctx)
+        # Stage 2: approve / deny.
+        verdict = self._approver.run(proposal.reply, ctx)
+        verdict_text = verdict.reply.strip()
+
+        if not verdict_text.upper().startswith("APPROVED"):
+            return AgentResult(
+                reply=verdict_text or "DENIED -- approver returned no verdict",
+                agent_name=self.name,
+                elapsed=getattr(verdict, "elapsed", 0.0),
+            )
+
+        # Stage 3: execute. Hand the executor the original task plus
+        # the proposed plan as context; the executor still has to
+        # actually do the work.
+        executor_input = f"{task}\n\nApproved plan:\n{proposal.reply}"
+        return self._executor.run(executor_input, ctx)
+
+
+# ===========================================================================
+# CritiqueAndRewrite
+# ===========================================================================
+
+
+_DEFAULT_GENERATOR_INSTRUCTIONS = """\
+You are the generator. Read the user request -- and any critique from
+previous iterations -- and produce a final answer. Output only the
+answer; do not explain your process. If the previous critique pointed
+out a specific issue, fix it.
+"""
+
+_DEFAULT_CRITIC_INSTRUCTIONS = """\
+You are the critic. You receive a generated answer. Reply with EXACTLY
+one line:
+
+    APPROVED
+
+or
+
+    REVISE -- <one-sentence concrete issue and how to fix it>
+
+Be specific. "Could be better" is not a useful critique. Point at one
+issue per round. Be willing to APPROVE when the answer is good enough;
+chasing perfection is its own failure mode.
+"""
+
+
+class CritiqueAndRewrite:
+    """Iterative content refinement: generator -> critic -> rewrite.
+
+    Different from :class:`PlanThenLoop` because there are no tools.
+    The loop is text-only: the generator produces a draft, the critic
+    points at one issue (or APPROVES), the generator rewrites
+    addressing the issue, repeat until APPROVED or budget exhausted.
+
+    Right tool when:
+
+    - Drafting prose, code snippets, or structured outputs that benefit
+      from one or two refinement passes.
+    - The acceptance criterion is qualitative (taste, clarity, tone)
+      rather than a world-state predicate.
+
+    Wrong tool when:
+
+    - The task has tools; use ``PlanExecuteEvaluate`` instead.
+    - Acceptance is a hard pass / fail predicate; use ``PlanThenLoop``
+      with a ``world_predicate``.
+    - The first draft is acceptable (just call the generator directly).
+    """
+
+    @staticmethod
+    def build(
+        *,
+        generator_llm: object,
+        critic_llm: object,
+        max_iterations: int = 3,
+        generator_instructions: str | None = None,
+        critic_instructions: str | None = None,
+        name: str = "critique_and_rewrite",
+    ) -> _CritiqueAndRewriteRunner:
+        """Construct the loop.
+
+        Args:
+            generator_llm / critic_llm: separate LLMs (recommended) or
+                the same one twice. Anthropic's article: separate is
+                more honest.
+            max_iterations: hard cap on rewrite rounds. Default 3.
+                After exhaustion, the most recent draft is returned
+                with a note about the unresolved critique.
+            generator_instructions / critic_instructions: optional
+                overrides of the canonical instructions.
+            name: workflow name.
+        """
+        generator = LLMAgent(
+            name="Generator",
+            description="produces the answer",
+            instructions=generator_instructions or _DEFAULT_GENERATOR_INSTRUCTIONS,
+            llm=generator_llm,  # type: ignore[arg-type]
+        )
+        critic = LLMAgent(
+            name="Critic",
+            description="approves or asks for a revision",
+            instructions=critic_instructions or _DEFAULT_CRITIC_INSTRUCTIONS,
+            llm=critic_llm,  # type: ignore[arg-type]
+        )
+        return _CritiqueAndRewriteRunner(
+            name=name,
+            generator=generator,
+            critic=critic,
+            max_iterations=max_iterations,
+        )
+
+
+class _CritiqueAndRewriteRunner:
+    def __init__(
+        self,
+        *,
+        name: str,
+        generator: object,
+        critic: object,
+        max_iterations: int,
+    ) -> None:
+        self.name = name
+        self.description = "CritiqueAndRewrite"
+        self._generator = generator
+        self._critic = critic
+        self._max_iterations = max_iterations
+
+    def run(self, task: str, ctx: object | None = None):
+        from edgevox.agents.base import AgentContext, AgentResult
+
+        ctx = ctx or AgentContext()
+        current_task = task
+        last_draft = ""
+        last_critique = ""
+
+        for _ in range(self._max_iterations):
+            draft = self._generator.run(current_task, ctx)
+            last_draft = draft.reply
+            critique = self._critic.run(last_draft, ctx)
+            last_critique = critique.reply.strip()
+
+            if last_critique.upper().startswith("APPROVED"):
+                return AgentResult(
+                    reply=last_draft,
+                    agent_name=self.name,
+                    elapsed=getattr(draft, "elapsed", 0.0),
+                )
+
+            # Revise: feed the critique back as task input for the next
+            # generator hop. Keep the original user request visible too
+            # so the model doesn't drift.
+            current_task = (
+                f"Original request: {task}\n\n"
+                f"Previous draft: {last_draft}\n\n"
+                f"Critique to address: {last_critique}\n\n"
+                "Produce a revised final answer."
+            )
+
+        # Budget exhausted -- return the last draft + a note so the
+        # caller can decide whether to ship it or escalate.
+        return AgentResult(
+            reply=(
+                f"{last_draft}\n\n"
+                f"[Note: revision budget of {self._max_iterations} exhausted; "
+                f"last unresolved critique was: {last_critique}]"
+            ),
+            agent_name=self.name,
+        )
+
+
+__all__ = [
+    "ApprovalGate",
+    "CritiqueAndRewrite",
+    "PlanExecuteEvaluate",
+    "PlanThenLoop",
+]
